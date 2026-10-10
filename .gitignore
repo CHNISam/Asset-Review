@@ -11,3 +11,15 @@ asset-viewer-demo/
 .coverage
 .pytest_cache/
 .DS_Store
+
+# A portable checkout may be used as its own local installation.  These are
+# runtime state, generated previews, local logs, or secrets — never source.
+/state/
+/cache/
+/asset-viewer.db*
+/collections.json
+/reviews.json
+/server*.log
+.env
+.env.*
+!.env.example

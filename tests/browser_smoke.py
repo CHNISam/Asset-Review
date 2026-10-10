@@ -13,6 +13,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from PIL import Image
 from playwright.sync_api import sync_playwright
 
 
@@ -70,6 +71,29 @@ def main() -> None:
         # prevents the source tree from shadowing the cleanly installed wheel.
         subprocess.run(
             [sys.executable, "-m", "asset_viewer", "demo", "--path", str(root / "demo-assets")],
+            check=True,
+            env=env,
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+
+        # A second, independent project proves the shared workstation can
+        # organize existing folders without a separate service or database.
+        genshin_assets = root / "genshin-theater-reference"
+        genshin_assets.mkdir()
+        Image.new("RGB", (320, 180), (54, 76, 112)).save(genshin_assets / "theater-reference.png")
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "asset_viewer",
+                "add",
+                str(genshin_assets),
+                "Second Project — Theme reference",
+                "--group",
+                "Second Project / Theme / Reference",
+            ],
             check=True,
             env=env,
             cwd=root,
@@ -143,9 +167,75 @@ def main() -> None:
                 assert page.locator("#tabGallery").is_visible()
                 assert page.locator("#tabActivity").is_visible()
                 assert page.locator("#tabApproved").is_visible()
+                assert page.locator("#projectFilter").is_visible()
+                assert page.locator("#sceneFilter").is_visible()
+                assert page.locator("#useFilter").is_visible()
+                assert page.locator("#selectionMode").is_visible()
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
                 summary = (page.locator("#summary").text_content() or "").strip()
                 assert summary and summary.lower() != "loading…", summary
+
+                # A project filter must open another registered project without
+                # replacing the demo collection or starting another service.
+                page.locator("#projectFilter").select_option(label="Second Project")
+                wait_until(
+                    "second project gallery to load",
+                    lambda: page.locator("#grid .card").count() == 1,
+                )
+                assert page.locator("#grid .card").filter(has_text="theater-reference.png").count() == 1
+
+                # The desktop collection <select> is intentionally hidden;
+                # use the visible project navigation just as a reviewer does.
+                page.locator(f'[data-collection="{demo_slug}"]').click()
+                wait_until("demo gallery to return", lambda: page.locator("#grid .card").count() == 6)
+
+                # "All projects" remains an explicit scope rather than
+                # silently falling back to the active collection.  Selecting
+                # across collections keeps native review mutations disabled.
+                page.locator("#projectFilter").select_option("__all__")
+                wait_until("all project assets to load", lambda: page.locator("#grid .card").count() == 7)
+                assert page.locator("#projectFilter").input_value() == "__all__"
+                assert page.locator("#sceneFilter").is_disabled()
+                page.locator("#selectionMode").click()
+                all_cards = page.locator("#grid .card")
+                all_cards.nth(0).click()
+                all_cards.nth(6).click()
+                wait_until(
+                    "two cross-project cards selected",
+                    lambda: (page.locator("#selectedCount").text_content() or "").startswith("2"),
+                )
+                assert not page.locator('#selectionAction option[value="approve"]').is_enabled()
+                page.locator("#clearSelection").click()
+                page.locator("#selectionMode").click()
+                page.locator(f'[data-collection="{demo_slug}"]').click()
+                wait_until("demo gallery after all-project scope", lambda: page.locator("#grid .card").count() == 6)
+
+                # In selection mode, an entire card selects rather than opens a
+                # preview. Shift selects a contiguous range and Ctrl toggles.
+                page.locator("#selectionMode").click()
+                cards = page.locator("#grid .card")
+                cards.nth(0).click()
+                cards.nth(2).click(modifiers=["Shift"])
+                wait_until(
+                    "three cards selected by range",
+                    lambda: (page.locator("#selectedCount").text_content() or "").startswith("3"),
+                )
+                assert page.locator("#modal").is_hidden()
+                cards.nth(1).click(modifiers=["Control"])
+                wait_until(
+                    "Ctrl toggles one selected card",
+                    lambda: (page.locator("#selectedCount").text_content() or "").startswith("2"),
+                )
+                page.locator("#selectAllVisible").click()
+                wait_until(
+                    "all filtered cards selected",
+                    lambda: (page.locator("#selectedCount").text_content() or "").startswith("6"),
+                )
+                page.locator("#clearSelection").click()
+                page.locator("#bulkbar").wait_for(state="visible")
+                assert page.locator("#selectAllVisible").is_enabled()
+                page.locator("#selectionMode").click()
+                page.locator("#bulkbar").wait_for(state="hidden")
 
                 page.locator("#tabApproved").click()
                 wait_until("one seeded approved asset", lambda: page.locator("#grid .card").count() == 1)
@@ -182,8 +272,61 @@ def main() -> None:
                 page.locator("#close").click()
                 page.locator("#modal").wait_for(state="hidden")
 
+                # Fast culling is a thin view over the same native review
+                # endpoints: mouse decisions, keyboard decisions, undo,
+                # comments, native details, and comparison all stay local.
+                page.locator("#quickReviewLaunch").click()
+                page.locator("#quickReview").wait_for(state="visible")
+                wait_until(
+                    "quick-review filmstrip",
+                    lambda: page.locator("#quickReviewFilmstrip .quick-review-frame").count() == 6,
+                )
+                first_quick_title = page.locator("#quickReviewTitle").inner_text()
+                with page.expect_response(
+                    lambda response: urllib.parse.urlsplit(response.url).path == "/api/review"
+                    and response.request.method == "POST",
+                    timeout=15_000,
+                ) as quick_mouse_review:
+                    page.locator("#quickReviewApprove").click()
+                assert quick_mouse_review.value.ok
+                wait_until(
+                    "quick-review auto-advance",
+                    lambda: page.locator("#quickReviewTitle").inner_text() != first_quick_title,
+                )
+                with page.expect_response(
+                    lambda response: urllib.parse.urlsplit(response.url).path == "/api/review"
+                    and response.request.method == "POST",
+                    timeout=15_000,
+                ) as quick_keyboard_review:
+                    page.keyboard.press("2")
+                assert quick_keyboard_review.value.ok
+                with page.expect_response(
+                    lambda response: urllib.parse.urlsplit(response.url).path == "/api/undo"
+                    and response.request.method == "POST",
+                    timeout=15_000,
+                ) as quick_undo:
+                    page.keyboard.press("Control+Z")
+                assert quick_undo.value.ok
+                with page.expect_response(
+                    lambda response: urllib.parse.urlsplit(response.url).path == "/api/comment"
+                    and response.request.method == "POST",
+                    timeout=15_000,
+                ) as quick_comment:
+                    page.locator("#quickReviewComment").fill("Increase contrast before the next pass.")
+                assert quick_comment.value.ok
+                page.locator("#quickReviewCompare").click()
+                page.locator("#compareModal").wait_for(state="visible")
+                page.locator("#closeCompare").click()
+                page.locator("#compareModal").wait_for(state="hidden")
+                page.locator("#quickReviewDetailsButton").click()
+                page.locator("#modal").wait_for(state="visible")
+                page.locator("#close").click()
+                page.locator("#quickReview").wait_for(state="visible")
+                page.locator("#closeQuickReview").click()
+                page.locator("#quickReview").wait_for(state="hidden")
+
                 page.locator("#tabApproved").click()
-                wait_until("new approval appears in Approved", lambda: page.locator("#grid .card").count() == 2)
+                wait_until("quick-review approval appears in Approved", lambda: page.locator("#grid .card").count() == 3)
                 assert page.locator("#approvedPanel").is_visible()
 
                 page.locator("#view").select_option("activity")

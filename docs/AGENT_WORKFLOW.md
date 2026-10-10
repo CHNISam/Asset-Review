@@ -58,6 +58,58 @@ asset-viewer export-manifest --collection brand-concepts --output review-manifes
 
 The manifest includes status, comments, new/seen timestamps, update timestamps, and variant-family metadata when related attempts have been grouped. This is preferred over asking an agent to infer approval state from chat text.
 
+## Visual approval convention
+
+Asset Viewer records **human** decisions. It is not an autonomous approval
+engine, a rights-management system, or a production-readiness gate.
+
+| Material purpose | What an `Approved` review means | What it does not mean |
+| --- | --- | --- |
+| Reference | The Owner allows it to inform the next creative pass. | Copyright, licence, attribution, or redistributability clearance. |
+| Design | The Owner selected the current visual direction. | A final scene, geometry, implementation, or production-quality baseline. |
+| Runtime / recording | A human found this capture useful as evidence or feedback. Routine screenshots and logs do not require one-by-one review. | Final Godot art acceptance or release sign-off. |
+| Asset | The Owner accepts it as a visual candidate for the stated use. | Import success, performance validation, legal clearance, or final in-engine art acceptance. |
+
+The status meanings are deliberately narrow:
+
+- **Unreviewed**: an agent must not infer a final decision.
+- **Maybe**: iterate from the attached feedback; do not treat it as a final
+  version.
+- **Rejected**: retain the original and its history, but do not carry it
+  forward as the selected direction.
+- **Approved**: the Owner's current visual selection. An agent may use it,
+  its comments, annotations, and selected family member as input to the next
+  design or search pass.
+
+Only an Owner may set review state, undo a review, or complete/reopen a
+collection. Agents must not call `review`, `undo`, `complete`, or `reopen`,
+must not mutate the SQLite database, and must not silently turn an unreviewed
+or `Maybe` item into a final decision. Agents may register a stable folder,
+read review data, attach non-review provenance, and report what still needs a
+human decision.
+
+For a downstream pass, read the approved set and exact feedback rather than
+guessing from filenames or chat:
+
+```bash
+asset-viewer reviews --collection brand-concepts --status approved --present-only --json
+asset-viewer handoff brand-concepts --output approved-handoff.json
+asset-viewer families brand-concepts --json
+asset-viewer annotations brand-concepts concept-17.png --active-only --json
+asset-viewer history brand-concepts concept-17.png --json
+```
+
+The optional MCP adapter exposes corresponding read operations such as review,
+event, family, annotation, and approved-handoff retrieval. It intentionally
+does not create a second review database or grant an agent authority to change
+human approval state.
+
+When a revised candidate is generated, preserve its relationship only when it
+is known: use existing `parent_asset_id` / `run_id` provenance or a human-made
+variant family. Do not invent family links. A preferred family member is a
+comparison preference, not an approval decision; a later runtime or Godot
+review remains a separate, traceable human step.
+
 ## Variant families
 
 Generative work often arrives as related attempts rather than unrelated files. Group those attempts in Asset Viewer without renaming or moving the originals:

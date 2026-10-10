@@ -1,8 +1,43 @@
-# Asset Viewer
+# Asset Review
 
-[![CI](https://github.com/TheSpyglassofOdysseus/asset-viewer/actions/workflows/ci.yml/badge.svg)](https://github.com/TheSpyglassofOdysseus/asset-viewer/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://www.python.org/)
+[![CI](https://github.com/CHNISam/Asset-Review/actions/workflows/ci.yml/badge.svg)](https://github.com/CHNISam/Asset-Review/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://www.python.org/)
 
-> A local-first visual review gallery for AI-generated images, videos, and project asset folders.
+> A local-first, shared visual review gallery for existing project images, videos, references, and design candidates.
+
+Asset Review is a maintained fork of [TheSpyglassofOdysseus/asset-viewer](https://github.com/TheSpyglassofOdysseus/asset-viewer). It keeps one lightweight localhost service for many projects while leaving every original file in its owning directory. See [UPSTREAM.md](UPSTREAM.md) for the retained upstream history and baseline.
+
+## Shared setup
+
+Windows, from a clean clone:
+
+```powershell
+git clone https://github.com/CHNISam/Asset-Review.git
+cd Asset-Review
+py -3 -m venv .venv
+.\.venv\Scripts\python -m pip install -e .
+Start-Asset-Review.cmd
+```
+
+The launcher keeps its private local state in `state/`, generated previews in `cache/`, and opens `http://127.0.0.1:8160`. Those directories, registered source paths, review databases, thumbnails, and original media are intentionally ignored by Git.
+
+Register folders in place; no import, copy, or project-code change is required:
+
+```powershell
+asset-viewer add "D:\Projects\Example\art\concepts" "Meadow concepts" --group "Example Game / Meadow / Environment / Design"
+asset-viewer add "D:\Projects\Example\captures" "Meadow captures" --group "Example Game / Meadow / Runtime"
+```
+
+Use the last group segment as the content purpose: `Reference`, `Design`, `Runtime`, or `Asset` (Chinese equivalents are supported). The UI keeps project/scene navigation and content purpose separate from the native `Approved` / `Maybe` / `Rejected` review state. Unknown material remains **未分类** rather than being guessed.
+
+For a project-owned reusable declaration, commit a relative `.asset-viewer.toml` and run `asset-viewer project-sync`; see [Project-native registration and metadata](#project-native-registration-and-metadata).
+
+### Fast human review
+
+The **快速审核** button opens a focused culling view for the current collection or filter result. Candidate design material is prioritized, while reference, runtime captures, and recordings stay in ordinary browse mode unless a reviewer deliberately opens them. Use the fixed mouse actions **保留 / 待修改 / 不采用**, or `1` / `2` / `3`; use arrows to move and `Ctrl+Z` to safely undo the most recent quick-review decision. Notes, spatial annotations, comparison, source details, history, and version families continue to use the native review surface on demand.
+
+## Human and agent boundary
+
+Humans own review decisions. Agents may register folders, attach non-review provenance, and read approved results, comments, annotations, history, and handoff manifests. Agents must not set review status, undo, mark a collection complete, or edit the local review database. The concise operating contract—including the distinction between reference acceptance, design selection, production-asset readiness, and in-engine art acceptance—is in [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md).
 
 Asset Viewer gives humans a clean place to **see, compare, play, approve, defer, and reject visual assets without moving the originals**.
 
@@ -74,7 +109,7 @@ No import job. No duplicate asset library. No requirement to upload the batch to
 - **Metadata adapters** for sidecar JSON and isolated PNG generation metadata import.
 - **Durable outbound webhooks** with signed delivery, replay control, and per-endpoint cursors for push automation.
 - **Context-aware selectors and menus** so capabilities grow without turning the toolbar into a button farm.
-- **Keyboard review**: arrow keys to navigate; `A`, `M`, `R` to classify.
+- **Quick culling mode**: full-size review, a filmstrip, mouse actions, `1` / `2` / `3`, arrows, and guarded `Ctrl+Z` reuse the native review history.
 - **Multiple collections** behind one viewer URL.
 - **Recursive discovery** of PNG, JPEG, WebP, GIF, AVIF, BMP, and SVG assets.
 - **Local-first security posture** — localhost by default, Waitress production serving, CSRF/Host enforcement, safe SVG handling, process-isolated bounded decoding, and optional Basic auth.
@@ -86,7 +121,7 @@ No import job. No duplicate asset library. No requirement to upload the batch to
 Asset Viewer requires Python 3.10+. The easiest install from GitHub is with `pipx`:
 
 ```bash
-pipx install git+https://github.com/TheSpyglassofOdysseus/asset-viewer.git
+pipx install git+https://github.com/CHNISam/Asset-Review.git
 asset-viewer demo
 asset-viewer serve
 ```
@@ -307,8 +342,8 @@ That separation is especially useful for generative workflows, where image volum
 ## Development
 
 ```bash
-git clone https://github.com/TheSpyglassofOdysseus/asset-viewer.git
-cd asset-viewer
+git clone https://github.com/CHNISam/Asset-Review.git
+cd Asset-Review
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .

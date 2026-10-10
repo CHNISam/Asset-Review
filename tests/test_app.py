@@ -33,13 +33,13 @@ class AppTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_gallery_script_polls_catalog_generation(self):
-        script = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text()
+        script = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("async function pollCatalog()", script)
         self.assertIn("catalogGeneration", script)
 
     def test_gallery_uses_smart_selectors_instead_of_action_button_farm(self):
-        html = (Path(__file__).parents[1] / "asset_viewer" / "static" / "index.html").read_text()
-        js = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text()
+        html = (Path(__file__).parents[1] / "asset_viewer" / "static" / "index.html").read_text(encoding="utf-8")
+        js = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text(encoding="utf-8")
         for control_id in ("view", "actions", "selectionAction", "reviewStatus", "assetActions", "familyActions", "annotationMode"):
             self.assertIn(f'id="{control_id}"', html)
         for retired_id in ("selectAll", "reviewComplete", "report", "refresh", "saveComment", "showHistory", "copyPath", "copyReviewLink"):
@@ -50,22 +50,22 @@ class AppTests(unittest.TestCase):
         self.assertIn("function renderReviewDecision(asset)", js)
 
     def test_v09_saved_views_and_command_palette_remain_progressive_disclosure(self):
-        html = (Path(__file__).parents[1] / "asset_viewer" / "static" / "index.html").read_text()
-        script = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text()
+        html = (Path(__file__).parents[1] / "asset_viewer" / "static" / "index.html").read_text(encoding="utf-8")
+        script = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn('id="commandPalette" class="command-palette hidden"', html)
         self.assertNotIn('id="commandPaletteButton"', html)
         self.assertIn("SAVED_VIEWS_KEY", script)
         self.assertIn("function renderViewMenu()", script)
-        self.assertIn("Saved views", script)
+        self.assertIn("已保存视图", script)
         self.assertIn("function openCommandPalette()", script)
         self.assertIn("event.ctrlKey || event.metaKey", script)
         self.assertIn("event.key.toLowerCase() === 'k'", script)
 
     def test_visual_redesign_projects_real_workflow_without_mockup_only_features(self):
         root = Path(__file__).parents[1] / "asset_viewer" / "static"
-        html = (root / "index.html").read_text()
-        script = (root / "app.js").read_text()
-        css = (root / "app.css").read_text()
+        html = (root / "index.html").read_text(encoding="utf-8")
+        script = (root / "app.js").read_text(encoding="utf-8")
+        css = (root / "app.css").read_text(encoding="utf-8")
         for control_id in ("collectionRail", "collectionNav", "collectionTitle", "tabGallery", "tabActivity", "tabApproved", "approvedPanel"):
             self.assertIn(f'id="{control_id}"', html)
         for mockup_only_copy in ("Trash", "Local Storage", "Add Assets"):
@@ -77,8 +77,80 @@ class AppTests(unittest.TestCase):
         self.assertIn(".collection-rail", css)
         self.assertIn(".content-frame.approved-mode", css)
 
+    def test_project_workspace_exposes_facets_and_card_selection_mode(self):
+        root = Path(__file__).parents[1] / "asset_viewer" / "static"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        script = (root / "app.js").read_text(encoding="utf-8")
+        css = (root / "app.css").read_text(encoding="utf-8")
+        for control_id in (
+            "projectFilter",
+            "sceneFilter",
+            "useFilter",
+            "selectionMode",
+            "selectAllVisible",
+            "clearSelection",
+        ):
+            self.assertIn(f'id="{control_id}"', html)
+        self.assertIn("selectionMode: false", script)
+        self.assertIn("selectionAnchor", script)
+        self.assertIn("selectionAnchorKey", script)
+        self.assertIn("function collectionTaxonomy", script)
+        self.assertIn("function selectRange", script)
+        self.assertIn("scope.kind === 'all' ? '__all__'", script)
+        self.assertIn("state.selectionMode || count > 0", script)
+        self.assertIn("const scopeRequest = state.scopeRequest", script)
+        reset_selection = script.split("function resetSelectionMode() {", 1)[1].split("function applyGalleryScope", 1)[0]
+        bulk_review = script.split("async function bulkReview(status) {", 1)[1].split("async function undoReview", 1)[0]
+        self.assertIn("state.selectionAnchorKey = '';", reset_selection)
+        self.assertIn("state.selectionAnchorKey = '';", bulk_review)
+        self.assertIn(".facet-bar", css)
+        self.assertIn(".selection-mode", css)
+
+    def test_quick_review_reuses_native_decisions_without_a_second_workflow(self):
+        root = Path(__file__).parents[1] / "asset_viewer" / "static"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        script = (root / "app.js").read_text(encoding="utf-8")
+        css = (root / "app.css").read_text(encoding="utf-8")
+        for control_id in (
+            "quickReviewLaunch",
+            "quickReview",
+            "quickReviewFilmstrip",
+            "quickReviewProgress",
+            "quickReviewApprove",
+            "quickReviewMaybe",
+            "quickReviewReject",
+            "quickReviewComment",
+            "quickReviewCompare",
+            "closeQuickReview",
+        ):
+            self.assertIn(f'id="{control_id}"', html)
+        self.assertIn("function startQuickReview()", script)
+        self.assertIn("function quickReviewCandidateAssets()", script)
+        self.assertIn("async function quickReviewDecision(status)", script)
+        self.assertIn("async function quickReviewUndo()", script)
+        self.assertIn("apiPost('/api/review'", script)
+        self.assertIn("apiPost('/api/undo'", script)
+        self.assertIn("quickReviewSaveRequest", script)
+        self.assertIn("event.key === '1'", script)
+        self.assertIn("event.key === '2'", script)
+        self.assertIn("event.key === '3'", script)
+        self.assertIn("event.key === 'ArrowLeft'", script)
+        self.assertIn("event.key === 'ArrowRight'", script)
+        self.assertIn("event.key.toLowerCase() === 'z'", script)
+        self.assertIn("quickReviewSessionIsCurrent", script)
+        self.assertIn("/api/review-history?", script)
+        self.assertIn(".quick-review", css)
+
+    def test_project_taxonomy_comes_from_registered_group_metadata(self):
+        script = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function collectionTaxonomy", script)
+        self.assertIn("collection.group", script)
+        self.assertIn("parts.slice(2, -1)", script)
+        self.assertNotIn("COLLECTION_TAXONOMY", script)
+        self.assertNotIn("mirror-garden-concept-art-2026-10-10", script)
+
     def test_comment_autosave_captures_asset_identity(self):
-        script = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text()
+        script = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text(encoding="utf-8")
         self.assertIn("const assetKey = keyFor(asset);", script)
         self.assertIn("saveCommentSnapshot(assetKey, collection, assetId, comment)", script)
         self.assertNotIn("setTimeout(() => saveComment().catch(showError), 650)", script)

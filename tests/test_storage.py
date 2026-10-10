@@ -177,6 +177,8 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(result["removed_files"], 1)
 
     def test_state_files_are_private(self):
+        if os.name == "nt":
+            self.skipTest("POSIX permission bits are not reported on Windows")
         storage.add_collection(str(self.images), "Images")
         storage.set_review("images", "frame.png", "approved")
         self.assertEqual(storage.data_dir().stat().st_mode & 0o077, 0)

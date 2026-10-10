@@ -26,6 +26,18 @@ let state = {
   workspaceTab: 'gallery',
   galleryFilterBeforeApproved: 'all',
   scan: {},
+  scope: {kind: 'collection', project: '', scene: ''},
+  scopeSlugs: [],
+  scopeRequest: 0,
+  selectionMode: false,
+  selectionAnchor: null,
+  selectionAnchorKey: '',
+  // Ephemeral presentation state only: quick review still reads and writes
+  // the same in-memory gallery rows and the native review endpoints.
+  quickReview: {open: false, keys: [], index: 0, scopeRequest: 0, runId: 0, saving: false, lastAction: null, commentTimer: null, commentPromise: null},
+  quickReviewRun: 0,
+  quickReviewSaveRequest: 0,
+  quickReviewCommentRequest: 0,
 };
 
 const $ = selector => document.querySelector(selector);
@@ -35,8 +47,56 @@ const compareModal = $('#compareModal');
 const commandPalette = $('#commandPalette');
 const SAVED_VIEWS_KEY = 'asset-viewer.saved-views.v1';
 const esc = value => String(value).replace(/[&<>\"]/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[char]));
-const keyFor = asset => asset.asset_id || asset.rel;
+const keyFor = asset => `${asset.collection || state.active}:${asset.asset_id || asset.rel}`;
 const assetSrc = asset => asset.preview || asset.thumb;
+
+const USE_LABELS = {
+  reference: '参考',
+  design: '设计',
+  runtime: '实机',
+  asset: '资产',
+  uncategorized: '未分类',
+};
+
+function useLabel(value) {
+  return USE_LABELS[value] || USE_LABELS.uncategorized;
+}
+
+function collectionTaxonomy(collectionOrSlug) {
+  const collection = typeof collectionOrSlug === 'string'
+    ? state.collections.find(item => item.slug === collectionOrSlug) || {slug: collectionOrSlug}
+    : (collectionOrSlug || {});
+  const parts = String(collection.group || '').split('/').map(part => part.trim()).filter(Boolean);
+  const project = parts[0] || collection.source_project || '未分类项目';
+  const scene = parts[1] || '未分类';
+  // A collection may explicitly declare its content use as the final group
+  // segment (for example, "Project / Scene / Reference").  Names and file
+  // paths are deliberately not used as hints: unknown material stays
+  // uncategorized until a person gives it a clear home.
+  const declaredUse = String(collection.content_use || collection.use || parts[parts.length - 1] || '').trim().toLowerCase();
+  const declaredUses = {
+    reference: 'reference', references: 'reference', '参考': 'reference',
+    design: 'design', designs: 'design', '设计': 'design',
+    runtime: 'runtime', '实机': 'runtime',
+    asset: 'asset', assets: 'asset', '资产': 'asset',
+    uncategorized: 'uncategorized', '未分类': 'uncategorized',
+  };
+  const use = declaredUses[declaredUse] || 'uncategorized';
+  const topicParts = use === 'uncategorized' ? parts.slice(2) : parts.slice(2, -1);
+  return {project, scene, topic: topicParts.join(' · ') || collection.label || '未分类', use, note: String(collection.note || '').trim()};
+}
+
+function assetTaxonomy(asset) {
+  return collectionTaxonomy(asset?.collection);
+}
+
+function collectionBySlug(slug) {
+  return state.collections.find(collection => collection.slug === slug) || null;
+}
+
+function isSingleCollectionScope() {
+  return state.scopeSlugs.length <= 1;
+}
 
 function loadSavedViews() {
   try {
@@ -54,8 +114,8 @@ function persistSavedViews() {
 function renderViewMenu() {
   const select = $('#view');
   const saved = state.savedViews.map(item => `<option value="saved:${esc(item.id)}">${esc(item.name)}</option>`).join('');
-  select.innerHTML = '<option value="gallery">View & saved views…</option><option value="activity">Activity</option>' +
-    (saved ? `<optgroup label="Saved views">${saved}</optgroup>` : '');
+  select.innerHTML = '<option value="gallery">视图…</option><option value="activity">审核记录</option>' +
+    (saved ? `<optgroup label="已保存视图">${saved}</optgroup>` : '');
   select.value = state.activeSavedView ? `saved:${state.activeSavedView}` : state.view;
 }
 
@@ -66,7 +126,7 @@ function clearActiveSavedView() {
 }
 
 function saveCurrentView() {
-  const name = window.prompt('Name this view');
+  const name = window.prompt('为此视图命名');
   if (!name || !name.trim()) return;
   const trimmed = name.trim().slice(0, 80);
   const existing = state.savedViews.find(item => item.name.toLowerCase() === trimmed.toLowerCase());
@@ -144,36 +204,91 @@ async function apiPost(path, payload) {
   return data;
 }
 
-async function load(requested, force = false) {
-  const requestedAsset = assetFromLocation();
-  const desired = requested || state.active || collectionFromLocation();
+async function fetchGallery(slug, force = false) {
   const params = new URLSearchParams();
-  if (desired) params.set('collection', desired);
+  if (slug) params.set('collection', slug);
   if (force) params.set('refresh', '1');
   const response = await fetch('/api/gallery' + (params.toString() ? '?' + params : ''), {cache: 'no-store'});
-  if (!response.ok) throw new Error('Gallery request failed');
-  const data = await response.json();
-  state.collections = data.collections;
-  state.images = data.images;
-  state.families = data.families || [];
-  state.active = data.active;
-  state.reviewState = data.review_state;
-  state.scan = data.scan || {};
-  state.catalogGeneration = Number((data.scan || {}).generation || 0);
+  if (!response.ok) throw new Error('图库请求失败');
+  return response.json();
+}
+
+function resetSelectionMode() {
   state.selected.clear();
-  renderCollections(data.active);
+  state.selectionAnchor = null;
+  state.selectionAnchorKey = '';
+  state.selectionMode = false;
+  document.body.classList.remove('selection-mode');
+  const toggle = $('#selectionMode');
+  if (toggle) {
+    toggle.classList.remove('active');
+    toggle.setAttribute('aria-pressed', 'false');
+    toggle.textContent = '多选';
+  }
+}
+
+function applyGalleryScope(payloads, scope) {
+  const first = payloads[0] || {};
+  state.collections = first.collections || state.collections;
+  state.images = payloads.flatMap(payload => (payload.images || []).map(asset => ({
+    ...asset,
+    collection: asset.collection || payload.active,
+  })));
+  state.families = payloads.flatMap(payload => (payload.families || []).map(family => ({
+    ...family,
+    collection: family.collection || payload.active,
+  })));
+  state.scopeSlugs = [...new Set(payloads.map(payload => payload.active).filter(Boolean))];
+  state.active = state.scopeSlugs.includes(scope.active) ? scope.active : (state.scopeSlugs[0] || '');
+  state.scope = {
+    kind: scope.kind || 'collection',
+    project: scope.project || '',
+    scene: scope.scene || '',
+  };
+  state.reviewState = state.scopeSlugs.length === 1 ? first.review_state : null;
+  state.scan = state.scopeSlugs.length === 1 ? (first.scan || {}) : {};
+  state.catalogGeneration = Number((first.scan || {}).generation || 0);
+  resetSelectionMode();
+  renderCollections(state.active);
+  renderFacetControls();
   applyFilter();
   updateBulk();
   updateReviewState();
-  if (data.active && location.pathname !== collectionUrl(data.active)) {
-    history.replaceState(null, '', collectionUrl(data.active));
-  }
+}
 
-  renderWorkspaceState();
+async function load(requested, force = false) {
+  if (isQuickReviewOpen()) closeQuickReview({refresh: false});
+  const requestedAsset = assetFromLocation();
+  const desired = requested || state.active || collectionFromLocation();
+  const request = ++state.scopeRequest;
+  const data = await fetchGallery(desired, force);
+  if (request !== state.scopeRequest) return;
+  const active = data.active;
+  const taxonomy = collectionTaxonomy((data.collections || []).find(collection => collection.slug === active) || {slug: active});
+  applyGalleryScope([data], {kind: 'collection', project: taxonomy.project, scene: taxonomy.scene, active});
+  if (active && location.pathname !== collectionUrl(active)) history.replaceState(null, '', collectionUrl(active));
   if (requestedAsset) {
     const index = state.filtered.findIndex(asset => (asset.asset_id || asset.rel) === requestedAsset);
     if (index >= 0) openAt(index, false);
   }
+}
+
+async function loadScope(slugs, scope, force = false) {
+  if (isQuickReviewOpen()) closeQuickReview({refresh: false});
+  const unique = [...new Set(slugs)].filter(Boolean);
+  if (!unique.length) return;
+  const request = ++state.scopeRequest;
+  const payloads = await Promise.all(unique.map(slug => fetchGallery(slug, force)));
+  if (request !== state.scopeRequest) return;
+  const active = unique.includes(state.active) ? state.active : unique[0];
+  applyGalleryScope(payloads, {...scope, active});
+  if (state.active && location.pathname !== collectionUrl(state.active)) history.replaceState(null, '', collectionUrl(state.active));
+}
+
+async function reloadCurrentScope(force = true) {
+  const slugs = state.scopeSlugs.length ? state.scopeSlugs : [state.active];
+  if (slugs.length <= 1) return load(slugs[0], force);
+  return loadScope(slugs, state.scope, force);
 }
 
 function activeCollectionRecord() {
@@ -189,7 +304,7 @@ function statusCounts() {
 }
 
 function statusDisplay(status) {
-  return ({approved: 'Approved', maybe: 'Maybe', rejected: 'Rejected', '': 'Needs review'})[status || ''] || status;
+  return ({approved: '已通过', maybe: '待定', rejected: '已拒绝', '': '待人工审核'})[status || ''] || status;
 }
 
 function formatBytes(value) {
@@ -206,16 +321,32 @@ function assetTypeLabel(asset) {
   return match ? match[1].toUpperCase() : '';
 }
 
+function scopeTitle() {
+  if (state.scope.kind === 'all') return '所有项目';
+  if (state.scope.kind === 'project') return state.scope.project || '项目';
+  if (state.scope.kind === 'scene') return [state.scope.project, state.scope.scene].filter(Boolean).join(' · ') || '场景';
+  return activeCollectionRecord()?.label || 'Asset Viewer';
+}
+
+function scopeCaption() {
+  if (state.scope.kind === 'all') return '跨项目素材浏览';
+  if (state.scope.kind === 'project') return '项目全部场景';
+  if (state.scope.kind === 'scene') return '场景全部素材';
+  const taxonomy = collectionTaxonomy(state.active);
+  return [taxonomy.project, taxonomy.scene, useLabel(taxonomy.use)].filter(Boolean).join(' · ');
+}
+
 function renderWorkspaceState() {
   const collection = activeCollectionRecord();
   const counts = statusCounts();
-  const title = collection?.label || 'Asset Viewer';
+  const title = scopeTitle();
   $('#collectionTitle').textContent = title;
-  document.title = collection ? `${title} · Asset Viewer` : 'Asset Viewer';
+  $('#scopeLabel').textContent = scopeCaption();
+  document.title = collection && isSingleCollectionScope() ? `${collection.label} · Asset Viewer` : 'Asset Viewer';
 
-  const parts = [`${state.images.length} assets`, `${counts.approved} approved`, `${counts.rejected} rejected`, `${counts.unreviewed} need review`];
-  if (counts.maybe) parts.splice(2, 0, `${counts.maybe} maybe`);
-  if (state.scan?.truncated) parts.push(`scan incomplete (${state.scan.reason || 'limit'})`);
+  const parts = [`${state.images.length} 项`, `${counts.approved} 已通过`, `${counts.rejected} 已拒绝`, `${counts.unreviewed} 待人工审核`];
+  if (counts.maybe) parts.splice(2, 0, `${counts.maybe} 待定`);
+  if (state.scan?.truncated) parts.push(`扫描未完成（${state.scan.reason || '限制'}）`);
   $('#summary').textContent = parts.join(' · ');
 
   document.querySelectorAll('[data-workspace-tab]').forEach(button => {
@@ -229,40 +360,89 @@ function renderWorkspaceState() {
 
   const approved = state.images.filter(asset => asset.status === 'approved');
   const approvedMode = state.workspaceTab === 'approved' && state.view === 'gallery';
+  const singleCollection = isSingleCollectionScope();
   document.querySelector('.content-frame')?.classList.toggle('approved-mode', approvedMode);
   $('#approvedPanel').classList.toggle('hidden', !approvedMode);
-  $('#approvedCount').textContent = `${approved.length} approved asset${approved.length === 1 ? '' : 's'}`;
+  $('#approvedCount').textContent = `${approved.length} 项已通过素材`;
   $('#approvedSummaryText').textContent = approved.length
-    ? 'Ready to package into the existing approved-set handoff.'
-    : 'Approve assets to prepare a handoff.';
-  $('#approvedHandoff').disabled = approved.length === 0;
-  $('#approvedReport').disabled = state.images.length === 0;
+    ? (singleCollection ? '可使用原有交接清单，不会移动或改写原文件。' : '当前为跨集合视图；请进入单个集合后导出交接清单。')
+    : '人工通过素材后，可在单个集合中交接。';
+  $('#approvedHandoff').disabled = approved.length === 0 || !singleCollection;
+  $('#approvedReport').disabled = state.images.length === 0 || !singleCollection;
   const totalBytes = approved.reduce((total, asset) => total + Number(asset.size || 0), 0);
-  $('#approvedMeta').innerHTML = `<div><span>Collection</span><strong>${esc(title)}</strong></div><div><span>Approved</span><strong>${approved.length}</strong></div>${totalBytes ? `<div><span>Total size</span><strong>${esc(formatBytes(totalBytes))}</strong></div>` : ''}`;
+  $('#approvedMeta').innerHTML = `<div><span>范围</span><strong>${esc(title)}</strong></div><div><span>已通过</span><strong>${approved.length}</strong></div>${totalBytes ? `<div><span>合计大小</span><strong>${esc(formatBytes(totalBytes))}</strong></div>` : ''}`;
 
-  if (state.workspaceTab === 'activity') $('#workspaceCount').textContent = `${state.activityEvents.length} recent events`;
-  else if (approvedMode) $('#workspaceCount').textContent = `${approved.length} approved`;
-  else $('#workspaceCount').textContent = `${state.filtered.length} shown`;
+  if (state.workspaceTab === 'activity') $('#workspaceCount').textContent = singleCollection ? `${state.activityEvents.length} 条记录` : '按集合查看历史';
+  else if (approvedMode) $('#workspaceCount').textContent = `${approved.length} 已通过`;
+  else $('#workspaceCount').textContent = `${state.filtered.length} 项显示中`;
+}
+
+function scopedCollections(project = '', scene = '') {
+  return state.collections.filter(collection => {
+    const taxonomy = collectionTaxonomy(collection);
+    return (!project || taxonomy.project === project) && (!scene || taxonomy.scene === scene);
+  });
+}
+
+function renderFacetControls() {
+  const projectSelect = $('#projectFilter');
+  const sceneSelect = $('#sceneFilter');
+  const useSelect = $('#useFilter');
+  const activeTaxonomy = collectionTaxonomy(state.active);
+  const projects = [...new Set(state.collections.map(collection => collectionTaxonomy(collection).project))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const selectedProject = state.scope.kind === 'all' ? '__all__' : (['project', 'scene'].includes(state.scope.kind) ? state.scope.project : '');
+  const projectOptions = [
+    '<option value="">当前集合</option>',
+    '<option value="__all__">所有项目</option>',
+    ...projects.map(project => `<option value="${esc(project)}">${esc(project)}</option>`),
+  ];
+  projectSelect.innerHTML = projectOptions.join('');
+  projectSelect.value = selectedProject || '';
+
+  const sceneProject = state.scope.kind === 'all' ? '' : (selectedProject || activeTaxonomy.project);
+  const scenes = [...new Set(scopedCollections(sceneProject).map(collection => collectionTaxonomy(collection).scene))]
+    .sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  sceneSelect.innerHTML = `<option value="">${state.scope.kind === 'all' ? '全部项目的场景' : (sceneProject ? '全部场景' : '当前集合')}</option>` + scenes.map(scene => `<option value="${esc(scene)}">${esc(scene)}</option>`).join('');
+  sceneSelect.disabled = state.scope.kind === 'all' || !sceneProject || scenes.length === 0;
+  sceneSelect.value = state.scope.kind === 'scene' ? state.scope.scene : '';
+
+  const previousUse = useSelect.value || 'all';
+  useSelect.innerHTML = '<option value="all">全部用途</option>' + Object.entries(USE_LABELS)
+    .map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
+  useSelect.value = USE_LABELS[previousUse] ? previousUse : 'all';
 }
 
 function renderCollections(active) {
   const select = $('#collection');
   const nav = $('#collectionNav');
-  const grouped = new Map();
+  const projects = new Map();
   for (const collection of state.collections) {
-    const group = collection.group || '';
-    if (!grouped.has(group)) grouped.set(group, []);
-    grouped.get(group).push(collection);
+    const taxonomy = collectionTaxonomy(collection);
+    if (!projects.has(taxonomy.project)) projects.set(taxonomy.project, new Map());
+    const scenes = projects.get(taxonomy.project);
+    if (!scenes.has(taxonomy.scene)) scenes.set(taxonomy.scene, []);
+    scenes.get(taxonomy.scene).push(collection);
   }
+
   const parts = [];
-  const navParts = [];
-  for (const [group, rows] of grouped) {
-    const options = rows.map(collection =>
-      `<option value="${esc(collection.slug)}">${esc(collection.label)}${collection.available === false ? ' — unavailable' : ''}</option>`
-    ).join('');
-    parts.push(group ? `<optgroup label="${esc(group)}">${options}</optgroup>` : options);
-    if (group) navParts.push(`<span class="collection-group">${esc(group)}</span>`);
-    navParts.push(...rows.map(collection => `<button type="button" class="collection-link${collection.slug === active ? ' active' : ''}" data-collection="${esc(collection.slug)}"${collection.available === false ? ' disabled' : ''}><span class="collection-icon" aria-hidden="true"></span><span>${esc(collection.label)}</span>${collection.available === false ? '<small>Unavailable</small>' : ''}</button>`));
+  const navParts = [`<button type="button" class="scope-link${state.scope.kind === 'all' ? ' active' : ''}" data-all-projects><span class="scope-dot" aria-hidden="true"></span><span>所有项目</span><small>${state.collections.length}</small></button>`];
+  for (const [project, scenes] of [...projects].sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))) {
+    const rows = [...scenes.values()].flat();
+    const isProjectActive = (state.scope.kind === 'project' || state.scope.kind === 'scene') && state.scope.project === project;
+    navParts.push(`<section class="project-node"><button type="button" class="project-link${isProjectActive ? ' active' : ''}" data-project="${esc(project)}"><span>${esc(project)}</span><small>${rows.length}</small></button><div class="scene-list">`);
+    const optionRows = [];
+    for (const [scene, collections] of [...scenes].sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))) {
+      const isSceneActive = state.scope.kind === 'scene' && state.scope.project === project && state.scope.scene === scene;
+      navParts.push(`<button type="button" class="scene-link${isSceneActive ? ' active' : ''}" data-project="${esc(project)}" data-scene="${esc(scene)}"><span>${esc(scene)}</span><small>${collections.length}</small></button><div class="collection-list">`);
+      for (const collection of collections) {
+        const taxonomy = collectionTaxonomy(collection);
+        navParts.push(`<button type="button" class="collection-link${state.scope.kind === 'collection' && collection.slug === active ? ' active' : ''}" data-collection="${esc(collection.slug)}"${collection.available === false ? ' disabled' : ''}><span class="collection-icon" aria-hidden="true"></span><span>${esc(collection.label)}</span><em>${esc(useLabel(taxonomy.use))}</em>${collection.available === false ? '<small>不可用</small>' : ''}</button>`);
+        optionRows.push(`<option value="${esc(collection.slug)}">${esc(collection.label)}${collection.available === false ? ' — 不可用' : ''}</option>`);
+      }
+      navParts.push('</div>');
+    }
+    navParts.push('</div></section>');
+    parts.push(`<optgroup label="${esc(project)}">${optionRows.join('')}</optgroup>`);
   }
   select.innerHTML = parts.join('');
   nav.innerHTML = navParts.join('');
@@ -270,20 +450,46 @@ function renderCollections(active) {
   nav.querySelectorAll('[data-collection]').forEach(button => {
     button.onclick = () => switchCollection(button.dataset.collection).catch(showError);
   });
+  nav.querySelectorAll('[data-project]').forEach(button => {
+    button.onclick = () => setProjectScope(button.dataset.project).catch(showError);
+  });
+  nav.querySelectorAll('[data-scene]').forEach(button => {
+    button.onclick = () => setSceneScope(button.dataset.project, button.dataset.scene).catch(showError);
+  });
+  nav.querySelector('[data-all-projects]')?.addEventListener('click', () => setAllProjectsScope().catch(showError));
+}
+
+async function setProjectScope(project) {
+  if (!project) return load(state.active);
+  const collections = scopedCollections(project);
+  return loadScope(collections.map(collection => collection.slug), {kind: 'project', project, scene: ''});
+}
+
+async function setSceneScope(project, scene) {
+  if (!project || !scene) return setProjectScope(project);
+  const collections = scopedCollections(project, scene);
+  return loadScope(collections.map(collection => collection.slug), {kind: 'scene', project, scene});
+}
+
+async function setAllProjectsScope() {
+  return loadScope(state.collections.map(collection => collection.slug), {kind: 'all', project: '', scene: ''});
 }
 
 function provenanceText(asset) {
   const p = asset.provenance || {};
   const extra = p.extra && typeof p.extra === 'object' ? Object.values(p.extra) : [];
-  return [p.source_project, p.tool, p.agent, p.model, p.prompt, p.seed, p.run_id, p.git_commit, ...extra].filter(Boolean).join(' ').toLowerCase();
+  const taxonomy = assetTaxonomy(asset);
+  return [p.source_project, p.tool, p.agent, p.model, p.prompt, p.seed, p.run_id, p.git_commit, taxonomy.project, taxonomy.scene, taxonomy.topic, useLabel(taxonomy.use), ...extra].filter(Boolean).join(' ').toLowerCase();
 }
 
 function assetSearchMatch(asset, query) {
   if (!query) return true;
   const terms = query.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
   const p = asset.provenance || {};
+  const taxonomy = assetTaxonomy(asset);
   const fields = {
-    status: asset.status || 'unreviewed', family: asset.family_name || '', project: p.source_project || '',
+    status: asset.status || 'unreviewed', family: asset.family_name || '', project: taxonomy.project || p.source_project || '',
+    scene: taxonomy.scene || '', use: useLabel(taxonomy.use), purpose: useLabel(taxonomy.use),
     tool: p.tool || '', agent: p.agent || '', model: p.model || '', prompt: p.prompt || '', run: p.run_id || '',
   };
   const haystack = `${asset.name} ${asset.rel} ${asset.comment || ''} ${asset.family_name || ''} ${provenanceText(asset)}`.toLowerCase();
@@ -299,14 +505,357 @@ function assetSearchMatch(asset, query) {
   });
 }
 
+function isQuickReviewOpen() {
+  const panel = $('#quickReview');
+  return Boolean(state.quickReview.open && panel && !panel.classList.contains('hidden'));
+}
+
+function quickReviewAssetAt(index = state.quickReview.index) {
+  const key = state.quickReview.keys[index];
+  return key ? state.images.find(asset => keyFor(asset) === key) || null : null;
+}
+
+function quickReviewAssets() {
+  return state.quickReview.keys.map(key => state.images.find(asset => keyFor(asset) === key)).filter(Boolean);
+}
+
+function quickReviewCandidateAssets() {
+  const visible = state.filtered.filter(asset => asset.present !== false);
+  // A mixed project view should begin with candidate design material. Other
+  // material remains available when a reviewer deliberately filters to it.
+  const designs = visible.filter(asset => assetTaxonomy(asset).use === 'design');
+  const candidates = designs.length ? designs : visible;
+  return [...candidates.filter(asset => !asset.status), ...candidates.filter(asset => asset.status)];
+}
+
+function updateQuickReviewLaunch() {
+  const button = $('#quickReviewLaunch');
+  if (!button) return;
+  const candidates = quickReviewCandidateAssets();
+  const designs = candidates.filter(asset => assetTaxonomy(asset).use === 'design');
+  button.disabled = state.workspaceTab !== 'gallery' || candidates.length === 0;
+  button.textContent = '快速审核';
+  button.title = designs.length
+    ? `优先从 ${candidates.filter(asset => !asset.status).length} 项待人工审核的候选设计开始。`
+    : '按当前筛选结果逐张审看；不会自动改变任何审核结果。';
+}
+
+function clearQuickReviewCommentTimer() {
+  if (state.quickReview.commentTimer) clearTimeout(state.quickReview.commentTimer);
+  state.quickReview.commentTimer = null;
+}
+
+function resetQuickReview() {
+  clearQuickReviewCommentTimer();
+  state.quickReviewRun += 1;
+  state.quickReviewSaveRequest += 1;
+  state.quickReviewCommentRequest += 1;
+  state.quickReview.open = false;
+  state.quickReview.runId = 0;
+  state.quickReview.keys = [];
+  state.quickReview.index = 0;
+  state.quickReview.saving = false;
+  state.quickReview.lastAction = null;
+  state.quickReview.commentPromise = null;
+  const panel = $('#quickReview');
+  panel?.classList.add('hidden');
+  panel?.classList.remove('suspended');
+  panel?.setAttribute('aria-hidden', 'true');
+  const video = $('#quickReviewVideo');
+  if (video) {
+    video.pause();
+    video.removeAttribute('src');
+    video.removeAttribute('poster');
+    video.load();
+  }
+}
+
+function closeQuickReview({refresh = true} = {}) {
+  if (!state.quickReview.open) return;
+  resetQuickReview();
+  if (refresh) applyFilter();
+  if (modal.classList.contains('hidden') && compareModal.classList.contains('hidden')) document.body.style.overflow = '';
+}
+
+function startQuickReview() {
+  const candidates = quickReviewCandidateAssets();
+  if (!candidates.length) return;
+  if (state.selectionMode) setSelectionMode(false, false);
+  const quick = state.quickReview;
+  quick.open = true;
+  quick.keys = candidates.map(keyFor);
+  quick.index = 0;
+  quick.scopeRequest = state.scopeRequest;
+  quick.runId = ++state.quickReviewRun;
+  quick.saving = false;
+  quick.lastAction = null;
+  const panel = $('#quickReview');
+  panel.classList.remove('hidden');
+  panel.classList.remove('suspended');
+  panel.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+  renderQuickReview();
+  requestAnimationFrame(() => $('#quickReviewApprove')?.focus());
+}
+
+function quickReviewMove(amount, force = false) {
+  const quick = state.quickReview;
+  if (!quick.open || (quick.saving && !force)) return;
+  quick.index = Math.max(0, Math.min(quick.keys.length - 1, quick.index + amount));
+  renderQuickReview();
+}
+
+function updateQuickReviewAsset(assetKey, patch) {
+  const asset = state.images.find(candidate => keyFor(candidate) === assetKey);
+  if (asset) Object.assign(asset, patch);
+  return asset;
+}
+
+function quickReviewSessionIsCurrent(runId, assetKey = '') {
+  return isQuickReviewOpen()
+    && state.quickReview.runId === runId
+    && state.quickReview.scopeRequest === state.scopeRequest
+    && (!assetKey || keyFor(quickReviewAssetAt()) === assetKey);
+}
+
+function quickReviewRequestIsCurrent(request, assetKey, runId) {
+  return isQuickReviewOpen()
+    && request === state.quickReviewSaveRequest
+    && quickReviewSessionIsCurrent(runId, assetKey);
+}
+
+function setQuickReviewMedia(asset) {
+  const image = $('#quickReviewImage');
+  const video = $('#quickReviewVideo');
+  const isVideo = asset.media_type === 'video';
+  image.classList.toggle('hidden', isVideo);
+  video.classList.toggle('hidden', !isVideo);
+  if (isVideo) {
+    image.removeAttribute('src');
+    image.alt = '';
+    video.poster = asset.preview || asset.thumb;
+    if (video.getAttribute('src') !== asset.file) {
+      video.src = asset.file;
+      video.load();
+    }
+    video.setAttribute('aria-label', asset.name);
+  } else {
+    video.pause();
+    video.removeAttribute('src');
+    video.removeAttribute('poster');
+    image.src = assetSrc(asset);
+    image.alt = asset.name;
+  }
+}
+
+function renderQuickReview() {
+  if (!isQuickReviewOpen()) return;
+  const quick = state.quickReview;
+  const assets = quickReviewAssets();
+  if (assets.length !== quick.keys.length) quick.keys = assets.map(keyFor);
+  if (!assets.length) {
+    closeQuickReview();
+    return;
+  }
+  quick.index = Math.max(0, Math.min(quick.index, assets.length - 1));
+  const asset = assets[quick.index];
+  setQuickReviewMedia(asset);
+  $('#quickReviewTitle').textContent = asset.name;
+  const resolution = asset.width && asset.height ? `${asset.width} × ${asset.height}` : assetTypeLabel(asset);
+  $('#quickReviewDetails').textContent = [asset.rel, resolution, formatBytes(asset.size)].filter(Boolean).join(' · ');
+  const status = asset.status || '';
+  const statusElement = $('#quickReviewStatus');
+  statusElement.textContent = statusDisplay(status);
+  statusElement.className = `quick-review-status ${status ? `status-${status}` : 'status-unreviewed'}`;
+  const reviewed = assets.filter(candidate => candidate.status).length;
+  $('#quickReviewProgress').textContent = `${quick.index + 1} / ${assets.length} · ${reviewed} 已评价`;
+  $('#quickReviewProgressBar').style.width = `${((quick.index + 1) / assets.length) * 100}%`;
+  const controlsDisabled = quick.saving;
+  $('#quickReviewPrevious').disabled = controlsDisabled || quick.index === 0;
+  $('#quickReviewNext').disabled = controlsDisabled || quick.index >= assets.length - 1;
+  $('#quickReviewApprove').disabled = controlsDisabled;
+  $('#quickReviewMaybe').disabled = controlsDisabled;
+  $('#quickReviewReject').disabled = controlsDisabled;
+  $('#quickReviewUndo').disabled = controlsDisabled || !quick.lastAction;
+  $('#quickReviewCompare').disabled = controlsDisabled || quick.index === 0;
+  for (const [buttonId, buttonStatus] of [['quickReviewApprove', 'approved'], ['quickReviewMaybe', 'maybe'], ['quickReviewReject', 'rejected']]) {
+    const button = $(`#${buttonId}`);
+    button.classList.toggle('decision-active', status === buttonStatus);
+    button.setAttribute('aria-pressed', String(status === buttonStatus));
+  }
+  const comment = $('#quickReviewComment');
+  if (document.activeElement !== comment) comment.value = asset.comment || '';
+  const strip = $('#quickReviewFilmstrip');
+  strip.innerHTML = assets.map((candidate, index) => `<button type="button" class="quick-review-frame${index === quick.index ? ' active' : ''}${candidate.status ? ` ${esc(candidate.status)}` : ''}" data-quick-index="${index}" aria-current="${index === quick.index ? 'true' : 'false'}" aria-label="${esc(`${index + 1}. ${candidate.name} · ${statusDisplay(candidate.status)}`)}"><img src="${esc(candidate.thumb)}" alt=""><span>${candidate.media_type === 'video' ? '▶' : index + 1}</span></button>`).join('');
+  strip.querySelectorAll('[data-quick-index]').forEach(button => {
+    button.onclick = () => {
+      if (state.quickReview.saving) return;
+      state.quickReview.index = Number(button.dataset.quickIndex);
+      renderQuickReview();
+    };
+  });
+  requestAnimationFrame(() => strip.querySelector('.quick-review-frame.active')?.scrollIntoView({block: 'nearest', inline: 'center'}));
+}
+
+function enqueueQuickReviewCommentSave(assetKey, collection, assetId, comment, runId) {
+  const quick = state.quickReview;
+  const previous = quick.commentPromise || Promise.resolve();
+  const promise = previous.catch(() => null).then(() =>
+    saveQuickReviewCommentSnapshot(assetKey, collection, assetId, comment, runId)
+  );
+  quick.commentPromise = promise;
+  promise.finally(() => {
+    if (state.quickReview.commentPromise === promise) state.quickReview.commentPromise = null;
+  }).catch(() => null);
+  return promise;
+}
+
+async function flushQuickReviewComment(asset, comment, runId) {
+  clearQuickReviewCommentTimer();
+  const quick = state.quickReview;
+  if (quick.commentPromise) await quick.commentPromise.catch(() => null);
+  if (!quickReviewSessionIsCurrent(runId, keyFor(asset))) return false;
+  if (comment === (asset.comment || '')) return true;
+  const promise = enqueueQuickReviewCommentSave(keyFor(asset), asset.collection, asset.asset_id, comment, runId);
+  const saved = await promise.then(() => true).catch(error => {
+    showError(error);
+    return false;
+  });
+  return saved && quickReviewSessionIsCurrent(runId, keyFor(asset));
+}
+
+async function saveQuickReviewCommentSnapshot(assetKey, collection, assetId, comment, runId) {
+  const request = ++state.quickReviewCommentRequest;
+  const current = quickReviewAssetAt();
+  if (quickReviewSessionIsCurrent(runId, assetKey) && current && keyFor(current) === assetKey) $('#quickReviewCommentState').textContent = '保存中…';
+  await apiPost('/api/comment', {collection, asset_id: assetId, comment});
+  updateQuickReviewAsset(assetKey, {comment, is_new: false});
+  renderWorkspaceState();
+  if (quickReviewSessionIsCurrent(runId, assetKey) && request === state.quickReviewCommentRequest && $('#quickReviewComment').value === comment) {
+    $('#quickReviewCommentState').textContent = '已保存';
+  }
+}
+
+function scheduleQuickReviewCommentSave() {
+  clearQuickReviewCommentTimer();
+  const asset = quickReviewAssetAt();
+  if (!asset) return;
+  const assetKey = keyFor(asset);
+  const collection = asset.collection;
+  const assetId = asset.asset_id;
+  const comment = $('#quickReviewComment').value;
+  const runId = state.quickReview.runId;
+  $('#quickReviewCommentState').textContent = '未保存';
+  state.quickReview.commentTimer = setTimeout(() => {
+    state.quickReview.commentTimer = null;
+    enqueueQuickReviewCommentSave(assetKey, collection, assetId, comment, runId).catch(showError);
+  }, 500);
+}
+
+async function quickReviewDecision(status) {
+  const quick = state.quickReview;
+  if (!isQuickReviewOpen() || quick.saving) return;
+  const asset = quickReviewAssetAt();
+  if (!asset) return;
+  const assetKey = keyFor(asset);
+  const runId = quick.runId;
+  const decisionComment = $('#quickReviewComment').value;
+  const unchanged = (asset.status || '') === status;
+  quick.saving = true;
+  renderQuickReview();
+  let request = 0;
+  try {
+    if (!await flushQuickReviewComment(asset, decisionComment, runId)) return;
+    if (!quickReviewSessionIsCurrent(runId, assetKey)) return;
+    if (unchanged) {
+      quickReviewMove(1, true);
+      return;
+    }
+    const previousStatus = asset.status || '';
+    const previousComment = asset.comment || '';
+    request = ++state.quickReviewSaveRequest;
+    await apiPost('/api/review', {collection: asset.collection, asset_id: asset.asset_id, status, comment: decisionComment});
+    updateQuickReviewAsset(assetKey, {status, comment: decisionComment, is_new: false});
+    renderWorkspaceState();
+    if (!quickReviewRequestIsCurrent(request, assetKey, runId)) return;
+    quick.lastAction = {assetKey, collection: asset.collection, assetId: asset.asset_id, index: quick.index, status, comment: decisionComment, previousStatus, previousComment};
+    quickReviewMove(1, true);
+    refreshReviewState().catch(showError);
+  } finally {
+    if (quickReviewSessionIsCurrent(runId) && (!request || request === state.quickReviewSaveRequest)) {
+      quick.saving = false;
+      renderQuickReview();
+    }
+  }
+}
+
+async function quickReviewUndo() {
+  const quick = state.quickReview;
+  const action = quick.lastAction;
+  if (!isQuickReviewOpen() || quick.saving || !action) return;
+  const runId = quick.runId;
+  const request = ++state.quickReviewSaveRequest;
+  quick.saving = true;
+  renderQuickReview();
+  try {
+    const params = new URLSearchParams({collection: action.collection, asset_id: action.assetId});
+    const historyResponse = await fetch('/api/review-history?' + params, {cache: 'no-store'});
+    if (!historyResponse.ok) throw new Error('无法确认可撤销的审核记录');
+    const history = await historyResponse.json();
+    if (!quickReviewSessionIsCurrent(runId) || request !== state.quickReviewSaveRequest) return;
+    const latest = (history.events || []).find(event => !event.undone_at);
+    if (!latest || latest.action !== 'review' || latest.old_status !== action.previousStatus || latest.new_status !== action.status || latest.old_comment !== action.previousComment || latest.new_comment !== action.comment) {
+      throw new Error('该素材已有后续意见或审核变更；请在详情的历史记录中处理，避免误撤销。');
+    }
+    const data = await apiPost('/api/undo', {collection: action.collection, asset_id: action.assetId});
+    const result = data.result || {};
+    updateQuickReviewAsset(action.assetKey, {status: result.status || '', comment: result.comment ?? action.previousComment});
+    renderWorkspaceState();
+    if (!quickReviewSessionIsCurrent(runId) || request !== state.quickReviewSaveRequest) return;
+    const index = quick.keys.indexOf(action.assetKey);
+    if (index >= 0) quick.index = index;
+    quick.lastAction = null;
+    refreshReviewState().catch(showError);
+  } finally {
+    if (quickReviewSessionIsCurrent(runId) && request === state.quickReviewSaveRequest) {
+      quick.saving = false;
+      renderQuickReview();
+    }
+  }
+}
+
+function openQuickReviewDetails() {
+  const asset = quickReviewAssetAt();
+  if (!asset) return;
+  const index = state.filtered.findIndex(candidate => keyFor(candidate) === keyFor(asset));
+  if (index < 0) {
+    showError(new Error('该素材已不在当前筛选范围内；退出快速审核后可在图库中打开详情。'));
+    return;
+  }
+  $('#quickReview').classList.add('suspended');
+  $('#quickReview').setAttribute('aria-hidden', 'true');
+  openAt(index);
+}
+
+function compareQuickReviewAssets() {
+  const assets = quickReviewAssets();
+  const index = state.quickReview.index;
+  if (index < 1 || !assets[index]) return;
+  $('#quickReview').classList.add('suspended');
+  $('#quickReview').setAttribute('aria-hidden', 'true');
+  openCompareAssets([assets[index - 1], assets[index]]);
+}
+
 function applyFilter() {
   const filter = $('#filter').value;
+  const use = $('#useFilter').value;
   const query = $('#search').value.trim().toLowerCase();
   const sort = $('#sort').value;
   let rows = state.images.filter(asset => {
     const statusMatch = filter === 'all' ||
       (filter === 'new' ? asset.is_new : (filter === 'unreviewed' ? !asset.status : asset.status === filter));
-    return statusMatch && assetSearchMatch(asset, query);
+    const useMatch = use === 'all' || assetTaxonomy(asset).use === use;
+    return statusMatch && useMatch && assetSearchMatch(asset, query);
   });
   const rank = {'': 0, maybe: 1, approved: 2, rejected: 3};
   rows = [...rows].sort((a, b) => {
@@ -320,43 +869,59 @@ function applyFilter() {
   state.filtered = rows;
   grid.innerHTML = rows.map((asset, index) => {
     const selected = state.selected.has(keyFor(asset));
+    const taxonomy = assetTaxonomy(asset);
     const statusClass = asset.status || 'needs-review';
     const technical = [
       assetTypeLabel(asset),
       asset.width && asset.height ? `${asset.width} × ${asset.height}` : '',
       formatBytes(asset.size),
     ].filter(Boolean).map(value => `<span class="tech-chip">${esc(value)}</span>`).join('');
-    const path = asset.rel && asset.rel !== asset.name ? `<div class="path">${esc(asset.rel)}</div>` : '';
-    return `<article class="card ${selected ? 'selected' : ''}" data-i="${index}" tabindex="0">
-      <div class="thumb-wrap"><img class="thumb" loading="lazy" src="${esc(asset.thumb)}" alt="${esc(asset.name)}">${asset.media_type === 'video' ? '<span class="video-play" aria-hidden="true">▶</span>' : ''}<span class="badge ${esc(statusClass)}">${esc(statusDisplay(asset.status))}</span><input class="select-toggle" data-select="${index}" type="checkbox" ${selected ? 'checked' : ''} aria-label="${selected ? 'Deselect' : 'Select'} ${esc(asset.name)}"></div>
+    const path = asset.rel && asset.rel !== asset.name ? `<div class="path" title="${esc(asset.rel)}">${esc(asset.rel)}</div>` : '';
+    const note = taxonomy.note ? `<span class="context-note">${esc(taxonomy.note)}</span>` : '';
+    return `<article class="card ${selected ? 'selected' : ''}${state.selectionMode ? ' selection-ready' : ''}" data-i="${index}" tabindex="0" aria-pressed="${state.selectionMode ? String(selected) : 'false'}">
+      <div class="thumb-wrap"><img class="thumb" loading="lazy" src="${esc(asset.thumb)}" alt="${esc(asset.name)}">${asset.media_type === 'video' ? '<span class="video-play" aria-hidden="true">▶</span>' : ''}<span class="badge ${esc(statusClass)}">${esc(statusDisplay(asset.status))}</span><input class="select-toggle" data-select="${index}" type="checkbox" ${selected ? 'checked' : ''} ${state.selectionMode ? '' : 'tabindex="-1"'} aria-label="${selected ? '取消选择' : '选择'} ${esc(asset.name)}"></div>
       <div class="caption">
         <div class="name">${esc(asset.name)}</div>
+        <div class="content-chips"><span class="scene-chip">${esc(taxonomy.scene)}</span><span class="use-chip use-${esc(taxonomy.use)}">${esc(useLabel(taxonomy.use))}</span>${note}</div>
         ${path}
         <div class="tech-row">${technical}</div>
-        <div class="meta-row">${asset.is_new ? '<span class="new-dot">new</span>' : ''}${asset.comment ? '<span class="note-dot">note</span>' : ''}${asset.annotation_count ? `<span class="note-dot">${asset.annotation_count} pinned</span>` : ''}${asset.family_name ? `<span class="family-chip">${esc(asset.family_name)}</span>` : ''}${asset.family_preferred ? '<span class="preferred-chip">preferred</span>' : ''}</div>
+        <div class="meta-row">${asset.is_new ? '<span class="new-dot">新素材</span>' : ''}${asset.comment ? '<span class="note-dot">有批注</span>' : ''}${asset.annotation_count ? `<span class="note-dot">${asset.annotation_count} 个标注</span>` : ''}${asset.family_name ? `<span class="family-chip">${esc(asset.family_name)}</span>` : ''}${asset.family_preferred ? '<span class="preferred-chip">偏好方案</span>' : ''}</div>
       </div>
     </article>`;
   }).join('');
   $('#empty').classList.toggle('hidden', rows.length > 0);
   grid.querySelectorAll('.card').forEach(element => {
+    const index = Number(element.dataset.i);
     element.onclick = event => {
       if (event.target.closest('[data-select]')) return;
-      openAt(Number(element.dataset.i));
+      if (state.selectionMode || event.ctrlKey || event.metaKey || event.shiftKey) {
+        if (!state.selectionMode) setSelectionMode(true, false);
+        if (event.shiftKey) selectRange(index); else toggleSelection(index);
+        return;
+      }
+      openAt(index);
     };
     element.onkeydown = event => {
-      if ((event.key === 'Enter' || event.key === ' ') && !event.target.closest('[data-select]')) {
-        event.preventDefault();
-        openAt(Number(element.dataset.i));
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      if (state.selectionMode) {
+        if (event.shiftKey) selectRange(index); else toggleSelection(index);
+      } else {
+        openAt(index);
       }
     };
   });
   grid.querySelectorAll('[data-select]').forEach(button => {
     button.onclick = event => {
+      event.preventDefault();
       event.stopPropagation();
+      if (!state.selectionMode) setSelectionMode(true, false);
       toggleSelection(Number(button.dataset.select));
     };
   });
   renderWorkspaceState();
+  updateQuickReviewLaunch();
+  updateBulk();
 }
 
 function setMenu(select, placeholder, items) {
@@ -366,49 +931,94 @@ function setMenu(select, placeholder, items) {
   select.value = '';
 }
 
+function setSelectionMode(enabled, render = true) {
+  state.selectionMode = Boolean(enabled);
+  if (!state.selectionMode) {
+    state.selected.clear();
+    state.selectionAnchor = null;
+    state.selectionAnchorKey = '';
+  }
+  document.body.classList.toggle('selection-mode', state.selectionMode);
+  const toggle = $('#selectionMode');
+  toggle.classList.toggle('active', state.selectionMode);
+  toggle.setAttribute('aria-pressed', String(state.selectionMode));
+  toggle.textContent = state.selectionMode ? '完成选择' : '多选';
+  if (render) applyFilter();
+}
+
 function selectAllVisible() {
+  if (!state.selectionMode) setSelectionMode(true, false);
   state.filtered.forEach(asset => state.selected.add(keyFor(asset)));
+  state.selectionAnchor = state.filtered.length ? 0 : null;
+  state.selectionAnchorKey = state.filtered.length ? keyFor(state.filtered[0]) : '';
   applyFilter();
-  updateBulk();
 }
 
 function toggleSelection(index) {
   const asset = state.filtered[index];
+  if (!asset) return;
   const key = keyFor(asset);
   state.selected.has(key) ? state.selected.delete(key) : state.selected.add(key);
+  state.selectionAnchor = index;
+  state.selectionAnchorKey = key;
   applyFilter();
-  updateBulk();
+}
+
+function selectRange(index) {
+  const asset = state.filtered[index];
+  if (!asset) return;
+  const anchorIndex = state.selectionAnchorKey
+    ? state.filtered.findIndex(candidate => keyFor(candidate) === state.selectionAnchorKey)
+    : -1;
+  const anchor = anchorIndex >= 0 ? anchorIndex : index;
+  const start = Math.min(anchor, index);
+  const end = Math.max(anchor, index);
+  for (let position = start; position <= end; position += 1) state.selected.add(keyFor(state.filtered[position]));
+  state.selectionAnchor = index;
+  state.selectionAnchorKey = keyFor(asset);
+  applyFilter();
 }
 
 function updateCollectionActions() {
   const review = state.reviewState;
+  const singleCollection = isSingleCollectionScope();
   const items = [
-    {value: 'select-all', label: `Select all visible (${state.filtered.length})`, disabled: !state.filtered.length},
-    {value: 'save-view', label: 'Save current view…'},
-    ...(state.activeSavedView ? [{value: 'delete-view', label: 'Delete active saved view'}] : []),
-    {value: 'report', label: 'Open review report'},
-    {value: 'handoff', label: 'Export approved handoff'},
-    {value: 'refresh', label: 'Refresh collection'},
+    {value: 'select-all', label: `全选当前结果（${state.filtered.length}）`, disabled: !state.filtered.length},
+    {value: 'save-view', label: '保存当前视图…'},
+    ...(state.activeSavedView ? [{value: 'delete-view', label: '删除当前保存视图'}] : []),
+    {value: 'report', label: '打开审核报告', disabled: !singleCollection},
+    {value: 'handoff', label: '导出已通过交接清单', disabled: !singleCollection},
+    {value: 'refresh', label: '刷新当前范围'},
   ];
-  if (review && !review.scan_incomplete && !review.empty) {
-    if (review.complete) items.splice(1, 0, {value: 'reopen', label: 'Reopen review'});
-    else if (!review.unreviewed) items.splice(1, 0, {value: 'complete', label: review.stale ? 'Re-complete review' : 'Mark review complete'});
+  if (singleCollection && review && !review.scan_incomplete && !review.empty) {
+    if (review.complete) items.splice(1, 0, {value: 'reopen', label: '重新打开审核'});
+    else if (!review.unreviewed) items.splice(1, 0, {value: 'complete', label: review.stale ? '重新完成审核' : '标记审核完成'});
   }
-  setMenu($('#actions'), 'More…', items);
+  setMenu($('#actions'), '更多操作…', items);
 }
 
 function updateBulk() {
-  const count = state.selected.size;
-  $('#bulkbar').classList.toggle('hidden', count === 0);
-  $('#selectedCount').textContent = `${count} selected`;
+  const assets = allSelectedAssets();
+  const count = assets.length;
+  const selectedCollections = new Set(assets.map(asset => asset.collection));
+  const singleCollection = selectedCollections.size <= 1;
+  $('#bulkbar').classList.toggle('hidden', !(state.selectionMode || count > 0));
+  $('#selectedCount').textContent = count ? `${count} 项已选择` : '选择素材';
+  $('#selectionScopeNote').textContent = !count
+    ? '点击卡片连续选择，或全选当前结果。'
+    : (singleCollection
+      ? '批量审核会保留原生审核历史。'
+      : '跨集合选择仅用于比较；审核和版本关系请在单个集合中完成。');
+  $('#selectAllVisible').disabled = state.filtered.length === 0;
+  $('#clearSelection').disabled = count === 0;
   const items = [
-    {value: 'approve', label: 'Set Approved'}, {value: 'maybe', label: 'Set Maybe'},
-    {value: 'reject', label: 'Set Rejected'}, {value: 'clear-review', label: 'Clear review state'},
-    {value: 'compare', label: 'Compare', disabled: count < 2},
-    {value: 'group', label: 'Group as variants', disabled: count < 2},
-    {value: 'clear-selection', label: 'Clear selection'},
+    {value: 'approve', label: '设为已通过', disabled: !count || !singleCollection}, {value: 'maybe', label: '设为待定', disabled: !count || !singleCollection},
+    {value: 'reject', label: '设为已拒绝', disabled: !count || !singleCollection}, {value: 'clear-review', label: '清除审核状态', disabled: !count || !singleCollection},
+    {value: 'compare', label: '比较选中方案', disabled: count < 2},
+    {value: 'group', label: '建立版本组', disabled: count < 2 || !singleCollection},
+    {value: 'clear-selection', label: '清空选择'},
   ];
-  setMenu($('#selectionAction'), 'Selected actions…', items);
+  setMenu($('#selectionAction'), '批量操作…', items);
   updateCollectionActions();
 }
 
@@ -417,72 +1027,89 @@ function updateReviewState() {
 }
 
 async function refreshReviewState() {
-  if (!state.active) return;
-  const response = await fetch('/api/pending?collection=' + encodeURIComponent(state.active), {cache: 'no-store'});
+  if (!state.active || !isSingleCollectionScope()) {
+    state.reviewState = null;
+    updateReviewState();
+    return;
+  }
+  const active = state.active;
+  const scopeRequest = state.scopeRequest;
+  const response = await fetch('/api/pending?collection=' + encodeURIComponent(active), {cache: 'no-store'});
   if (!response.ok) return;
   const data = await response.json();
+  if (scopeRequest !== state.scopeRequest || !isSingleCollectionScope() || state.active !== active) return;
   state.reviewState = data.collections[0] || null;
   updateReviewState();
 }
 
-function familyById(familyId) {
-  return state.families.find(family => family.family_id === familyId) || null;
+function familyById(familyId, collection = '') {
+  return state.families.find(family => family.family_id === familyId && (!collection || family.collection === collection)) || null;
 }
 
 function renderReviewDecision(asset) {
   const status = asset?.status || '';
-  const labels = {approved: 'Approved', maybe: 'Maybe', rejected: 'Rejected', '': 'Unreviewed'};
+  const labels = {approved: '已通过', maybe: '待定', rejected: '已拒绝', '': '待人工审核'};
   const indicator = $('#reviewDecision');
   indicator.textContent = labels[status] || status;
   indicator.className = `review-decision ${status ? `decision-${status}` : 'decision-unreviewed'}`;
   $('#reviewStatus').value = status;
 }
 
+function metadataValue(value) {
+  if (Array.isArray(value)) return value.map(metadataValue).join(' · ');
+  if (value && typeof value === 'object') {
+    try { return JSON.stringify(value); } catch { return String(value); }
+  }
+  return String(value ?? '');
+}
+
 function renderProvenance(asset) {
   const p = asset?.provenance || {};
+  const taxonomy = assetTaxonomy(asset);
   const rows = [
-    ['Project', p.source_project], ['Tool', p.tool], ['Agent', p.agent], ['Model', p.model],
-    ['Prompt', p.prompt], ['Seed', p.seed], ['Run', p.run_id], ['Git commit', p.git_commit],
-    ['Parent asset', p.parent_asset_id],
+    ['浏览分类', [taxonomy.project, taxonomy.scene, useLabel(taxonomy.use)].filter(Boolean).join(' · ')],
+    ['来源项目', p.source_project], ['工具', p.tool], ['代理', p.agent], ['模型', p.model],
+    ['提示词', p.prompt], ['随机种子', p.seed], ['运行批次', p.run_id], ['Git 提交', p.git_commit],
+    ['父级素材', p.parent_asset_id],
   ].filter(([, value]) => value);
   const extras = p.extra && typeof p.extra === 'object' ? Object.entries(p.extra) : [];
   const content = $('#provenanceContent');
-  if (!rows.length && !extras.length) {
-    content.innerHTML = '<span class="muted">No provenance metadata attached.</span>';
+  if (rows.length === 1 && !extras.length) {
+    content.innerHTML = `${rows.map(([key, value]) => `<div class="provenance-row"><strong>${esc(key)}</strong><span>${esc(metadataValue(value))}</span></div>`).join('')}<span class="muted">来源：未声明／未导入</span>`;
     return;
   }
   content.innerHTML = [...rows, ...extras].map(([key, value]) =>
-    `<div class="provenance-row"><strong>${esc(key)}</strong><span>${esc(value)}</span></div>`
+    `<div class="provenance-row"><strong>${esc(key)}</strong><span>${esc(metadataValue(value))}</span></div>`
   ).join('');
 }
 
 function updateAssetActions(asset) {
   const items = [
-    {value: 'history', label: 'Review history'},
-    {value: 'undo', label: 'Undo last review change'},
-    {value: 'copy-path', label: 'Copy relative path'},
-    {value: 'copy-link', label: 'Copy review link'},
-    {value: 'open-original', label: 'Open original'},
+    {value: 'history', label: '审核历史'},
+    {value: 'undo', label: '撤销上次审核变更'},
+    {value: 'copy-path', label: '复制相对路径'},
+    {value: 'copy-link', label: '复制审核链接'},
+    {value: 'open-original', label: '打开原文件'},
   ];
-  setMenu($('#assetActions'), 'Actions…', items);
+  setMenu($('#assetActions'), '更多操作…', items);
 }
 
 function renderFamilyRow(asset) {
   const row = $('#familyRow');
   if (!asset || !asset.family_id) {
     row.classList.add('hidden');
-    setMenu($('#familyActions'), 'Family…', []);
+    setMenu($('#familyActions'), '版本组…', []);
     return;
   }
-  const family = familyById(asset.family_id);
+  const family = familyById(asset.family_id, asset.collection);
   const count = family ? family.members.filter(member => member.present).length : state.images.filter(item => item.family_id === asset.family_id).length;
   const latest = family && family.latest_asset_id === asset.asset_id;
-  $('#familyName').textContent = asset.family_name || (family && family.name) || 'Variant family';
-  $('#familyMeta').textContent = `${count} variant${count === 1 ? '' : 's'}${asset.family_preferred ? ' · preferred' : ''}${latest ? ' · latest' : ''}`;
-  setMenu($('#familyActions'), 'Family…', [
-    {value: 'compare', label: 'Compare family', disabled: count < 2},
-    {value: 'prefer', label: asset.family_preferred ? 'Already preferred' : 'Set as preferred', disabled: Boolean(asset.family_preferred)},
-    {value: 'leave', label: 'Remove from family'},
+  $('#familyName').textContent = asset.family_name || (family && family.name) || '版本组';
+  $('#familyMeta').textContent = `${count} 个版本${asset.family_preferred ? ' · 偏好方案' : ''}${latest ? ' · 最新' : ''}`;
+  setMenu($('#familyActions'), '版本组…', [
+    {value: 'compare', label: '比较版本组', disabled: count < 2},
+    {value: 'prefer', label: asset.family_preferred ? '已设为偏好方案' : '设为偏好方案', disabled: Boolean(asset.family_preferred)},
+    {value: 'leave', label: '移出版本组'},
   ]);
   row.classList.remove('hidden');
 }
@@ -516,7 +1143,7 @@ function openAt(index, updateUrl = true) {
   $('#details').textContent = `${asset.rel} · ${resolution} · ${formatBytes(asset.size)}`;
   document.querySelector('.annotation-toolbar')?.classList.toggle('hidden', isVideo);
   $('#comment').value = asset.comment || '';
-  $('#commentState').textContent = 'Saved';
+  $('#commentState').textContent = '已保存';
   renderReviewDecision(asset);
   renderFamilyRow(asset);
   renderProvenance(asset);
@@ -547,8 +1174,13 @@ function close() {
   state.annotations = [];
   cancelAnnotationMode();
   renderAnnotations();
+  if (isQuickReviewOpen()) {
+    $('#quickReview').classList.remove('suspended');
+    $('#quickReview').setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => $('#quickReviewApprove')?.focus());
+  }
   if (state.active) history.replaceState(null, '', collectionUrl(state.active));
-  if (compareModal.classList.contains('hidden')) document.body.style.overflow = '';
+  if (compareModal.classList.contains('hidden') && !isQuickReviewOpen()) document.body.style.overflow = '';
 }
 
 const step = amount => openAt(state.current + amount);
@@ -561,7 +1193,7 @@ function formatBytes(bytes) {
 }
 
 function updateLocal(assetOrRel, patch) {
-  const asset = state.images.find(item => item.asset_id === assetOrRel || item.rel === assetOrRel);
+  const asset = state.images.find(item => keyFor(item) === assetOrRel || item.asset_id === assetOrRel || item.rel === assetOrRel);
   if (asset) Object.assign(asset, patch);
 }
 
@@ -609,14 +1241,17 @@ function scheduleCommentSave() {
 }
 
 async function bulkReview(status) {
-  const assets = state.images.filter(asset => state.selected.has(keyFor(asset)));
+  const assets = allSelectedAssets();
   const rels = assets.map(asset => asset.rel);
   if (!rels.length) return;
-  await apiPost('/api/review', {collection: state.active, rels, status});
+  const collections = [...new Set(assets.map(asset => asset.collection))];
+  if (collections.length !== 1) throw new Error('跨集合选择不能批量审核；请先进入一个项目场景或集合。');
+  await apiPost('/api/review', {collection: collections[0], rels, status});
   for (const asset of assets) updateLocal(asset.asset_id || asset.rel, {status, is_new: false});
   state.selected.clear();
+  state.selectionAnchor = null;
+  state.selectionAnchorKey = '';
   applyFilter();
-  updateBulk();
   await refreshReviewState();
 }
 
@@ -865,35 +1500,38 @@ function annotationPointerUp(event) {
 }
 
 async function groupVariants() {
-  const assets = state.images.filter(asset => state.selected.has(keyFor(asset)));
+  const assets = allSelectedAssets();
   if (assets.length < 2) return;
+  const collections = [...new Set(assets.map(asset => asset.collection))];
+  if (collections.length !== 1) throw new Error('跨集合选择不能建立版本关系。');
+  const collection = collections[0];
   const familyIds = [...new Set(assets.map(asset => asset.family_id).filter(Boolean))];
   if (familyIds.length > 1) throw new Error('Selected assets span multiple existing families. Remove them first or group one family at a time.');
   if (familyIds.length === 1) {
     const ungrouped = assets.filter(asset => !asset.family_id);
     if (!ungrouped.length) throw new Error('Those assets are already in the same family.');
-    await apiPost('/api/family', {collection: state.active, action: 'add', family_id: familyIds[0], asset_ids: ungrouped.map(asset => asset.asset_id)});
+    await apiPost('/api/family', {collection, action: 'add', family_id: familyIds[0], asset_ids: ungrouped.map(asset => asset.asset_id)});
   } else {
     const suggested = assets.map(asset => asset.name.replace(/\.[^.]+$/, '').replace(/[-_ ]?(v|variant|concept)?\d+$/i, '')).filter(Boolean)[0] || 'Variant family';
     const name = window.prompt('Name this variant family', suggested);
     if (!name) return;
-    await apiPost('/api/family', {collection: state.active, action: 'create', name, asset_ids: assets.map(asset => asset.asset_id)});
+    await apiPost('/api/family', {collection, action: 'create', name, asset_ids: assets.map(asset => asset.asset_id)});
   }
-  await load(state.active);
+  await reloadCurrentScope();
 }
 
 async function setPreferredFamilyMember() {
   const asset = state.filtered[state.current];
   if (!asset || !asset.family_id) return;
   await apiPost('/api/family', {collection: asset.collection, action: 'prefer', family_id: asset.family_id, asset_id: asset.asset_id});
-  await load(state.active);
+  await reloadCurrentScope();
 }
 
 async function leaveFamily() {
   const asset = state.filtered[state.current];
   if (!asset || !asset.family_id) return;
   await apiPost('/api/family', {collection: asset.collection, action: 'remove', family_id: asset.family_id, asset_ids: [asset.asset_id]});
-  await load(state.active);
+  await reloadCurrentScope();
 }
 
 function openCompareAssets(assets) {
@@ -911,7 +1549,7 @@ function openCompareAssets(assets) {
 function openFamilyCompare() {
   const asset = state.filtered[state.current];
   if (!asset || !asset.family_id) return;
-  const family = familyById(asset.family_id);
+  const family = familyById(asset.family_id, asset.collection);
   const members = state.images.filter(item => item.family_id === asset.family_id && item.present !== false);
   members.sort((a, b) => {
     if (a.asset_id === family?.preferred_asset_id) return -1;
@@ -923,14 +1561,23 @@ function openFamilyCompare() {
   openCompareAssets(members);
 }
 
-function clearSelection() {
+function clearSelection({exit = false} = {}) {
   state.selected.clear();
+  state.selectionAnchor = null;
+  state.selectionAnchorKey = '';
+  if (exit) {
+    setSelectionMode(false);
+    return;
+  }
   applyFilter();
-  updateBulk();
+}
+
+function allSelectedAssets() {
+  return state.images.filter(asset => state.selected.has(keyFor(asset)));
 }
 
 function selectedAssets() {
-  return state.images.filter(asset => state.selected.has(keyFor(asset))).slice(0, 4);
+  return allSelectedAssets().slice(0, 4);
 }
 
 function resetCompareView(render = true) {
@@ -1059,7 +1706,12 @@ function openCompare() {
 
 function closeCompare() {
   compareModal.classList.add('hidden');
-  if (modal.classList.contains('hidden')) document.body.style.overflow = '';
+  if (isQuickReviewOpen()) {
+    $('#quickReview').classList.remove('suspended');
+    $('#quickReview').setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => $('#quickReviewCompare')?.focus());
+  }
+  if (modal.classList.contains('hidden') && !isQuickReviewOpen()) document.body.style.overflow = '';
 }
 
 function formatEventTime(value) {
@@ -1090,6 +1742,13 @@ function activityPresentation(event) {
 
 async function loadActivity() {
   if (!state.active) return;
+  if (!isSingleCollectionScope()) {
+    state.activityEvents = [];
+    $('#activitySummary').textContent = '活动记录按集合保存';
+    $('#activityList').innerHTML = '<div class="activity-empty">请选择一个具体集合查看审核历史与批注记录。</div>';
+    renderWorkspaceState();
+    return;
+  }
   const response = await fetch(`/api/activity?collection=${encodeURIComponent(state.active)}&limit=200`, {cache: 'no-store'});
   if (!response.ok) throw new Error('Activity request failed');
   const data = await response.json();
@@ -1161,7 +1820,7 @@ async function setView(view) {
 }
 
 async function switchCollection(slug) {
-  if (!slug || slug === state.active) return;
+  if (!slug || (slug === state.active && isSingleCollectionScope())) return;
   const tab = state.workspaceTab;
   history.pushState(null, '', collectionUrl(slug));
   await load(slug);
@@ -1181,7 +1840,7 @@ function downloadJson(filename, payload) {
 }
 
 async function exportHandoff() {
-  if (!state.active) return;
+  if (!state.active || !isSingleCollectionScope()) return;
   const response = await fetch(`/api/handoff?collection=${encodeURIComponent(state.active)}`, {cache: 'no-store'});
   if (!response.ok) throw new Error('Approved handoff request failed');
   const payload = await response.json();
@@ -1195,7 +1854,7 @@ async function handleCollectionAction(value) {
   else if (value === 'delete-view') deleteActiveSavedView();
   else if (value === 'report') window.open(`/report?collection=${encodeURIComponent(state.active)}&present=1&refresh=1`, '_blank', 'noopener');
   else if (value === 'handoff') await exportHandoff();
-  else if (value === 'refresh') await load(state.active, true);
+  else if (value === 'refresh') await reloadCurrentScope(true);
   else if (value === 'complete' || value === 'reopen') await toggleComplete();
   updateCollectionActions();
 }
@@ -1238,10 +1897,14 @@ function paletteCommands() {
     {label: 'View: Approved', run: () => setWorkspaceTab('approved')},
     {label: 'Focus search', run: () => $('#search').focus()},
     {label: 'Save current view…', run: () => saveCurrentView()},
-    {label: 'Refresh collection', run: () => load(state.active, true)},
-    {label: 'Open review report', run: () => window.open(`/report?collection=${encodeURIComponent(state.active)}&present=1&refresh=1`, '_blank', 'noopener')},
-    {label: 'Export approved handoff', run: () => exportHandoff()},
+    {label: 'Refresh collection', run: () => reloadCurrentScope(true)},
   ];
+  if (isSingleCollectionScope()) {
+    commands.push(
+      {label: 'Open review report', run: () => window.open(`/report?collection=${encodeURIComponent(state.active)}&present=1&refresh=1`, '_blank', 'noopener')},
+      {label: 'Export approved handoff', run: () => exportHandoff()},
+    );
+  }
   for (const saved of state.savedViews) commands.push({label: `Saved view: ${saved.name}`, run: () => applySavedView(saved.id)});
   if (state.filtered.length) commands.push({label: `Select all visible (${state.filtered.length})`, run: () => selectAllVisible()});
   if (state.selected.size >= 2) commands.push({label: 'Compare selected assets', run: () => openCompare()});
@@ -1296,10 +1959,41 @@ function runPaletteCommand(index) {
 }
 
 $('#collection').onchange = () => switchCollection($('#collection').value).catch(showError);
+$('#projectFilter').onchange = () => {
+  const project = $('#projectFilter').value;
+  if (project === '__all__') setAllProjectsScope().catch(showError);
+  else if (project) setProjectScope(project).catch(showError);
+  else load(state.active).catch(showError);
+};
+$('#sceneFilter').onchange = () => {
+  const scene = $('#sceneFilter').value;
+  const project = $('#projectFilter').value && $('#projectFilter').value !== '__all__'
+    ? $('#projectFilter').value
+    : collectionTaxonomy(state.active).project;
+  if (scene) setSceneScope(project, scene).catch(showError);
+  else if ($('#projectFilter').value === '__all__') setAllProjectsScope().catch(showError);
+  else if ($('#projectFilter').value) setProjectScope(project).catch(showError);
+  else load(state.active).catch(showError);
+};
+$('#useFilter').onchange = () => { syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); };
 $('#filter').onchange = () => { syncWorkspaceFromAssetControls(); applyFilter(); updateCollectionActions(); };
 $('#sort').onchange = () => { if (state.workspaceTab === 'activity') syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); };
 $('#search').oninput = () => { if (state.workspaceTab === 'activity') syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); updateCollectionActions(); };
 $('#view').onchange = () => setView($('#view').value).catch(showError);
+$('#quickReviewLaunch').onclick = () => startQuickReview();
+$('#closeQuickReview').onclick = () => closeQuickReview();
+$('#quickReviewPrevious').onclick = () => quickReviewMove(-1);
+$('#quickReviewNext').onclick = () => quickReviewMove(1);
+$('#quickReviewApprove').onclick = () => quickReviewDecision('approved').catch(showError);
+$('#quickReviewMaybe').onclick = () => quickReviewDecision('maybe').catch(showError);
+$('#quickReviewReject').onclick = () => quickReviewDecision('rejected').catch(showError);
+$('#quickReviewUndo').onclick = () => quickReviewUndo().catch(showError);
+$('#quickReviewDetailsButton').onclick = () => openQuickReviewDetails();
+$('#quickReviewCompare').onclick = () => compareQuickReviewAssets();
+$('#quickReviewComment').oninput = scheduleQuickReviewCommentSave;
+$('#selectionMode').onclick = () => setSelectionMode(!state.selectionMode);
+$('#selectAllVisible').onclick = () => selectAllVisible();
+$('#clearSelection').onclick = () => clearSelection();
 document.querySelectorAll('[data-workspace-tab]').forEach(button => {
   button.onclick = () => setWorkspaceTab(button.dataset.workspaceTab).catch(showError);
 });
@@ -1367,26 +2061,75 @@ document.onkeydown = event => {
     if (event.key === 'Escape') closeCompare();
     return;
   }
-  if (modal.classList.contains('hidden')) return;
-  if (event.target && ['TEXTAREA', 'INPUT', 'SELECT'].includes(event.target.tagName)) return;
-  if (event.key === 'Escape' && state.annotationMode) cancelAnnotationMode();
-  else if (event.key === 'Escape') close();
-  else if (event.key === 'ArrowLeft') step(-1);
-  else if (event.key === 'ArrowRight') step(1);
-  else if (event.key.toLowerCase() === 'a') review('approved').catch(showError);
-  else if (event.key.toLowerCase() === 'm') review('maybe').catch(showError);
-  else if (event.key.toLowerCase() === 'r') review('rejected').catch(showError);
+  const editing = event.target && ['TEXTAREA', 'INPUT', 'SELECT'].includes(event.target.tagName);
+  if (!modal.classList.contains('hidden')) {
+    if (editing) return;
+    if (event.key === 'Escape' && state.annotationMode) cancelAnnotationMode();
+    else if (event.key === 'Escape') close();
+    else if (event.key === 'ArrowLeft') step(-1);
+    else if (event.key === 'ArrowRight') step(1);
+    else if (event.key.toLowerCase() === 'a') review('approved').catch(showError);
+    else if (event.key.toLowerCase() === 'm') review('maybe').catch(showError);
+    else if (event.key.toLowerCase() === 'r') review('rejected').catch(showError);
+    return;
+  }
+  if (isQuickReviewOpen()) {
+    if (editing) return;
+    if (event.repeat && (((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') || ['1', '2', '3'].includes(event.key))) {
+      event.preventDefault();
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      quickReviewUndo().catch(showError);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      closeQuickReview();
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      quickReviewMove(-1);
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      quickReviewMove(1);
+    } else if (event.key === '1') {
+      event.preventDefault();
+      quickReviewDecision('approved').catch(showError);
+    } else if (event.key === '2') {
+      event.preventDefault();
+      quickReviewDecision('maybe').catch(showError);
+    } else if (event.key === '3') {
+      event.preventDefault();
+      quickReviewDecision('rejected').catch(showError);
+    }
+    return;
+  }
+  if (state.selectionMode && !editing) {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+      event.preventDefault();
+      selectAllVisible();
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      clearSelection({exit: true});
+      return;
+    }
+  }
 };
 
 async function pollCatalog() {
-  if (document.hidden || !state.active || state.selected.size) return;
+  if (document.hidden || !state.active || !isSingleCollectionScope() || state.selected.size) return;
+  if (isQuickReviewOpen()) return;
   if (!modal.classList.contains('hidden') || !compareModal.classList.contains('hidden')) return;
-  const params = new URLSearchParams({collection: state.active});
+  const scopeRequest = state.scopeRequest;
+  const active = state.active;
+  const params = new URLSearchParams({collection: active});
   const response = await fetch('/api/gallery?' + params, {cache: 'no-store'});
   if (!response.ok) return;
   const data = await response.json();
+  if (scopeRequest !== state.scopeRequest || !isSingleCollectionScope() || state.active !== active) return;
   const generation = Number((data.scan || {}).generation || 0);
-  if (generation !== state.catalogGeneration) await load(state.active);
+  if (generation !== state.catalogGeneration) await load(active);
 }
 
 function showError(error) {

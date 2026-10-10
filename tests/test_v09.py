@@ -236,7 +236,10 @@ adapters = ["png_text", "sidecar"]
         Image.new("RGB", (20, 20), (9, 9, 9)).save(image)
         outside = self.project / "outside.json"
         outside.write_text(json.dumps({"version": 1, "provenance": {"model": "secret"}}))
-        image.with_name(image.name + ".asset-viewer.json").symlink_to(outside)
+        try:
+            image.with_name(image.name + ".asset-viewer.json").symlink_to(outside)
+        except OSError:
+            self.skipTest("symlinks unavailable")
         storage.add_collection(str(self.renders), "Linked")
         from asset_viewer.app import scan_collection
         scan_collection("linked", force=True)

@@ -31,9 +31,10 @@ asset-viewer = "asset_viewer.cli:main"
 asset-viewer-mcp = "asset_viewer.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/TheSpyglassofOdysseus/asset-viewer"
-Repository = "https://github.com/TheSpyglassofOdysseus/asset-viewer"
-Issues = "https://github.com/TheSpyglassofOdysseus/asset-viewer/issues"
+Homepage = "https://github.com/CHNISam/Asset-Review"
+Repository = "https://github.com/CHNISam/Asset-Review"
+Issues = "https://github.com/CHNISam/Asset-Review/issues"
+Upstream = "https://github.com/TheSpyglassofOdysseus/asset-viewer"
 
 [tool.setuptools]
 packages = ["asset_viewer"]
