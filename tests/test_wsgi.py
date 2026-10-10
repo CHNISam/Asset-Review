@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 
 from PIL import Image
@@ -210,6 +211,17 @@ class WsgiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], "image/png")
         self.assertGreater(len(original), 20)
+
+    def test_waitress_latin1_path_info_preserves_utf8_asset_names(self):
+        name = "示例花园.png"
+        Image.new("RGB", (20, 12), (7, 8, 9)).save(self.images / name)
+        self.request("GET", "/api/gallery", query="collection=samples&refresh=1")
+        request_path = f"/asset/thumb/samples/{urllib.parse.quote(name)}"
+        waitress_path_info = urllib.parse.unquote_to_bytes(request_path).decode("latin-1")
+        status, headers, body = self.request("GET", waitress_path_info)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/jpeg")
+        self.assertGreater(len(body), 100)
 
     def test_human_review_report_route(self):
         self.request("GET", "/api/gallery", query="collection=samples&refresh=1")

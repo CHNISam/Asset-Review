@@ -33,9 +33,9 @@ def webhook_state_path() -> Path:
 def _read_state() -> dict[str, Any]:
     path = webhook_state_path()
     try:
-        payload = json.loads(path.read_text()) if path.exists() else {}
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         return payload if isinstance(payload, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
 
 
@@ -43,7 +43,7 @@ def _write_state(payload: dict[str, Any]) -> None:
     path = webhook_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.chmod(0o600)
     temporary.replace(path)
     path.chmod(0o600)

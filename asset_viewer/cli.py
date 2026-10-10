@@ -55,6 +55,14 @@ from .storage import (
 )
 
 
+def _configure_utf8_stdio() -> None:
+    """Keep CLI output readable when Windows inherits a legacy code page."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, OSError):
+            pass
+
 
 def scan_registered(collection: str | None = None) -> list[tuple[str, int, bool]]:
     rows = collections()
@@ -419,6 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    _configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args()
     try:
@@ -460,7 +469,7 @@ def main() -> None:
             if args.output == "-":
                 sys.stdout.write(payload)
             else:
-                Path(args.output).expanduser().write_text(payload)
+                Path(args.output).expanduser().write_text(payload, encoding="utf-8")
                 print(f"Wrote {args.output}")
         elif args.command == "report":
             if not args.no_scan:
@@ -472,7 +481,7 @@ def main() -> None:
             if args.output == "-":
                 sys.stdout.write(payload)
             else:
-                Path(args.output).expanduser().write_text(payload)
+                Path(args.output).expanduser().write_text(payload, encoding="utf-8")
                 print(f"Wrote {args.output}")
         elif args.command == "project-config":
             payload = load_project_config(args.path)
@@ -538,7 +547,7 @@ def main() -> None:
             if args.output == "-":
                 sys.stdout.write(rendered)
             else:
-                Path(args.output).expanduser().write_text(rendered)
+                Path(args.output).expanduser().write_text(rendered, encoding="utf-8")
                 print(f"Wrote {args.output}")
         elif args.command == "pending":
             if not args.no_scan:

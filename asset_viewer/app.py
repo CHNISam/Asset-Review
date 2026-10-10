@@ -82,6 +82,8 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 
 MAX_SCAN_FILES = _env_int("ASSET_VIEWER_MAX_SCAN_FILES", 50_000)
 MAX_SCAN_SECONDS = _env_int("ASSET_VIEWER_MAX_SCAN_SECONDS", 10)
+MAX_REQUEST_BODY_BYTES = 256 * 1024
+MAX_REJECTED_BODY_DRAIN_BYTES = MAX_REQUEST_BODY_BYTES + 64 * 1024
 SCAN_TTL_SECONDS = _env_int("ASSET_VIEWER_SCAN_TTL_SECONDS", 60)
 MAX_THUMBNAIL_SOURCE_BYTES = _env_int("ASSET_VIEWER_MAX_THUMBNAIL_BYTES", 250 * 1024 * 1024)
 MAX_VIDEO_PREVIEW_SOURCE_BYTES = _env_int("ASSET_VIEWER_MAX_VIDEO_PREVIEW_BYTES", 2 * 1024 * 1024 * 1024)
@@ -485,6 +487,8 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
         trusted = getattr(self.server, "trusted_hosts", LOOPBACK_HOSTS)
         if host_is_trusted(self.headers.get("Host"), trusted):
             return True
+        if self.command == "POST":
+            self._discard_rejected_body()
         self._send(421, "text/plain; charset=utf-8", "Untrusted Host header")
         return False
 
@@ -501,6 +505,8 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
                     return True
             except (ValueError, UnicodeDecodeError, binascii.Error):
                 pass
+        if self.command == "POST":
+            self._discard_rejected_body()
         self._send(401, "text/plain; charset=utf-8", "Authentication required", {"WWW-Authenticate": 'Basic realm="Asset Viewer", charset="UTF-8"'})
         return False
 
@@ -561,16 +567,37 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _discard_rejected_body(self, length: int | None = None) -> None:
+        """Drain a small rejected POST body so the HTTP response is delivered reliably."""
+        try:
+            length = int(self.headers.get("Content-Length", "0")) if length is None else length
+        except ValueError:
+            self.close_connection = True
+            return
+        if length <= 0:
+            return
+        if length > MAX_REJECTED_BODY_DRAIN_BYTES:
+            self.close_connection = True
+            return
+        remaining = length
+        while remaining:
+            chunk = self.rfile.read(min(64 * 1024, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
     def _static(self, name: str, content_type: str) -> None:
         path = STATIC / name
         self._send_path(200, content_type, path, {"Cache-Control": "public, max-age=300"}) if path.is_file() else self._send(404, "text/plain; charset=utf-8", "Not found")
 
-    def _read_json(self, maximum: int = 256 * 1024) -> dict[str, Any]:
+    def _read_json(self, maximum: int = MAX_REQUEST_BODY_BYTES) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length < 0 or length > maximum:
+            self._discard_rejected_body(length)
             raise ValueError("request too large")
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
+            self._discard_rejected_body(length)
             raise ValueError("content type must be application/json")
         payload = json.loads(self.rfile.read(length) or b"{}")
         if not isinstance(payload, dict):
@@ -746,6 +773,7 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
         if not self._guard():
             return
         if not self._csrf_valid():
+            self._discard_rejected_body()
             return self._send_json(403, {"error": "CSRF validation failed"})
         path = urllib.parse.urlparse(self.path).path
         try:

@@ -61,15 +61,15 @@ def legacy_reviews_path() -> Path:
 
 def _load_json(path: Path, default: Any) -> Any:
     try:
-        return json.loads(path.read_text()) if path.exists() else default
-    except (OSError, json.JSONDecodeError):
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return default
 
 
 def _atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    data = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+    data = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
     with _WRITE_LOCK:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:

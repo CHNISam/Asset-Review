@@ -1,6 +1,9 @@
 @echo off
 setlocal EnableExtensions
 
+rem Keep registry and review text portable when Windows uses a legacy code page.
+set "PYTHONUTF8=1"
+
 set "AV_ROOT=%~dp0"
 set "ASSET_VIEWER_HOME=%AV_ROOT%state"
 set "ASSET_VIEWER_CACHE=%AV_ROOT%cache"

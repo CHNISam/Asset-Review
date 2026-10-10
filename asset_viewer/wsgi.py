@@ -85,6 +85,14 @@ def _status_line(status: int) -> str:
     return f"{status} {phrase}"
 
 
+def _normalize_wsgi_path(path: str) -> str:
+    """Recover UTF-8 URL bytes that WSGI servers expose as Latin-1 text."""
+    try:
+        return path.encode("latin-1").decode("utf-8")
+    except UnicodeError:
+        return path
+
+
 def _header(environ: dict[str, Any], name: str) -> str:
     key = "HTTP_" + name.upper().replace("-", "_")
     if name.lower() == "content-type":
@@ -220,7 +228,7 @@ class AssetViewerWSGI:
             return _bytes_response(start_response, 421, "text/plain; charset=utf-8", "Untrusted Host header")
 
         method = str(environ.get("REQUEST_METHOD") or "GET").upper()
-        path = str(environ.get("PATH_INFO") or "/")
+        path = _normalize_wsgi_path(str(environ.get("PATH_INFO") or "/"))
         query = urllib.parse.parse_qs(str(environ.get("QUERY_STRING") or ""))
 
         if method == "GET" and path == "/api/health":

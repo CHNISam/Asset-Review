@@ -146,7 +146,7 @@ class CliWorkflowTests(unittest.TestCase):
         output = Path(self.tmp.name) / "review.md"
         result = self.run_cli("report", "--collection", "images", "--format", "markdown", "--output", str(output))
         self.assertEqual(result.returncode, 0, result.stderr)
-        text = output.read_text()
+        text = output.read_text(encoding="utf-8")
         self.assertIn("Asset Viewer Review Report", text)
         self.assertIn("a.png — Approved", text)
 
@@ -179,7 +179,7 @@ class CliWorkflowTests(unittest.TestCase):
         output = Path(self.tmp.name) / "handoff.json"
         handoff = self.run_cli("handoff", "images", "--output", str(output))
         self.assertEqual(handoff.returncode, 0, handoff.stderr)
-        payload = json.loads(output.read_text())
+        payload = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["items"][0]["provenance"]["source_project"], "Whetstone")
 

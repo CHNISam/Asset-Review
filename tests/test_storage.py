@@ -36,6 +36,12 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(removed["label"], "My Images")
         self.assertEqual(storage.collections(), [])
 
+    def test_collection_registry_round_trips_utf8_metadata(self):
+        storage.add_collection(str(self.images), "示例花园", "示例项目 / 花园 / Design")
+        row = storage.collections()[0]
+        self.assertEqual(row["label"], "示例花园")
+        self.assertEqual(row["group"], "示例项目 / 花园 / Design")
+
     def test_safe_file_blocks_traversal_symlink_and_non_images(self):
         storage.add_collection(str(self.images), "Images")
         inside = self.images / "inside.png"
