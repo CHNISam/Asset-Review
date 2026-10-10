@@ -46,9 +46,54 @@ const modal = $('#modal');
 const compareModal = $('#compareModal');
 const commandPalette = $('#commandPalette');
 const SAVED_VIEWS_KEY = 'asset-viewer.saved-views.v1';
+const THEME_KEY = 'asset-viewer.theme';
+const DENSITY_KEY = 'asset-viewer.density';
+const APP_NAME = 'Asset Review';
 const esc = value => String(value).replace(/[&<>\"]/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[char]));
 const keyFor = asset => `${asset.collection || state.active}:${asset.asset_id || asset.rel}`;
 const assetSrc = asset => asset.preview || asset.thumb;
+
+// Per-viewer conveniences only; review state never lives in browser storage.
+function readPref(key, fallback = '') {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+
+function writePref(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* private window */ }
+}
+
+let toastTimer = null;
+function toast(message, {error = false} = {}) {
+  const element = $('#toast');
+  if (!element || !message) return;
+  element.textContent = message;
+  element.classList.toggle('error', error);
+  element.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => element.classList.remove('show'), error ? 5200 : 2200);
+}
+
+const THEME_LABELS = {'': '主题：跟随系统', dark: '主题：深色', light: '主题：浅色'};
+function applyTheme(theme) {
+  if (theme) document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+  $('#themeLabel').textContent = THEME_LABELS[theme || ''];
+}
+
+function cycleTheme() {
+  const order = ['', 'dark', 'light'];
+  const next = order[(order.indexOf(document.documentElement.dataset.theme || '') + 1) % order.length];
+  writePref(THEME_KEY, next);
+  applyTheme(next);
+  toast(THEME_LABELS[next]);
+}
+
+function setDensity(value) {
+  const density = String(Math.max(0, Math.min(2, Number(value) || 0)));
+  grid.dataset.density = density;
+  $('#density').value = density;
+  writePref(DENSITY_KEY, density);
+}
 
 const USE_LABELS = {
   reference: '参考',
@@ -108,13 +153,13 @@ function loadSavedViews() {
 }
 
 function persistSavedViews() {
-  localStorage.setItem(SAVED_VIEWS_KEY, JSON.stringify(state.savedViews));
+  writePref(SAVED_VIEWS_KEY, JSON.stringify(state.savedViews));
 }
 
 function renderViewMenu() {
   const select = $('#view');
   const saved = state.savedViews.map(item => `<option value="saved:${esc(item.id)}">${esc(item.name)}</option>`).join('');
-  select.innerHTML = '<option value="gallery">视图…</option><option value="activity">审核记录</option>' +
+  select.innerHTML = '<option value="gallery">素材</option><option value="activity">审核记录</option>' +
     (saved ? `<optgroup label="已保存视图">${saved}</optgroup>` : '');
   select.value = state.activeSavedView ? `saved:${state.activeSavedView}` : state.view;
 }
@@ -141,6 +186,7 @@ function saveCurrentView() {
   state.activeSavedView = record.id;
   persistSavedViews();
   renderViewMenu();
+  toast(`已保存视图“${trimmed}”`);
 }
 
 function applySavedView(id) {
@@ -188,7 +234,7 @@ function assetUrl(asset) {
 
 async function session() {
   const response = await fetch('/api/session', {cache: 'no-store'});
-  if (!response.ok) throw new Error('Session request failed');
+  if (!response.ok) throw new Error('无法连接本地服务');
   const data = await response.json();
   state.csrf = data.csrf;
 }
@@ -303,8 +349,33 @@ function statusCounts() {
   }, {approved: 0, maybe: 0, rejected: 0, unreviewed: 0});
 }
 
+const STATUS_LABELS = {approved: '已通过', maybe: '待定', rejected: '已拒绝', '': '待审'};
+
 function statusDisplay(status) {
-  return ({approved: '已通过', maybe: '待定', rejected: '已拒绝', '': '待人工审核'})[status || ''] || status;
+  return STATUS_LABELS[status || ''] || status;
+}
+
+function renderStatusChips(counts) {
+  const current = $('#filter').value;
+  const newCount = state.images.filter(asset => asset.is_new).length;
+  const chips = [
+    ['all', '全部', state.images.length],
+    ['unreviewed', '待审', counts.unreviewed],
+    ['approved', '通过', counts.approved],
+    ['maybe', '待定', counts.maybe],
+    ['rejected', '拒绝', counts.rejected],
+    ...(newCount || current === 'new' ? [['new', '新', newCount]] : []),
+  ];
+  $('#statusChips').innerHTML = chips.map(([value, label, count]) =>
+    `<button type="button" class="status-chip${current === value ? ' active' : ''}" data-status="${value}" aria-pressed="${current === value}">${value === 'all' ? '' : '<i aria-hidden="true"></i>'}${label}<b>${count}</b></button>`
+  ).join('');
+}
+
+function setStatusFilter(value) {
+  const select = $('#filter');
+  if (select.value === value) value = 'all';
+  select.value = value;
+  select.onchange();
 }
 
 function formatBytes(value) {
@@ -325,7 +396,7 @@ function scopeTitle() {
   if (state.scope.kind === 'all') return '所有项目';
   if (state.scope.kind === 'project') return state.scope.project || '项目';
   if (state.scope.kind === 'scene') return [state.scope.project, state.scope.scene].filter(Boolean).join(' · ') || '场景';
-  return activeCollectionRecord()?.label || 'Asset Viewer';
+  return activeCollectionRecord()?.label || APP_NAME;
 }
 
 function scopeCaption() {
@@ -342,12 +413,14 @@ function renderWorkspaceState() {
   const title = scopeTitle();
   $('#collectionTitle').textContent = title;
   $('#scopeLabel').textContent = scopeCaption();
-  document.title = collection && isSingleCollectionScope() ? `${collection.label} · Asset Viewer` : 'Asset Viewer';
+  document.title = collection && isSingleCollectionScope() ? `${collection.label} · ${APP_NAME}` : APP_NAME;
 
-  const parts = [`${state.images.length} 项`, `${counts.approved} 已通过`, `${counts.rejected} 已拒绝`, `${counts.unreviewed} 待人工审核`];
-  if (counts.maybe) parts.splice(2, 0, `${counts.maybe} 待定`);
+  const reviewed = state.images.length - counts.unreviewed;
+  const parts = [`${state.images.length} 项素材`, state.images.length ? `已审 ${reviewed}（${Math.round((reviewed / state.images.length) * 100)}%）` : ''];
+  if (state.reviewState?.complete) parts.push('审核已完成');
   if (state.scan?.truncated) parts.push(`扫描未完成（${state.scan.reason || '限制'}）`);
-  $('#summary').textContent = parts.join(' · ');
+  $('#summary').textContent = parts.filter(Boolean).join(' · ');
+  renderStatusChips(counts);
 
   document.querySelectorAll('[data-workspace-tab]').forEach(button => {
     const selected = button.dataset.workspaceTab === state.workspaceTab;
@@ -374,7 +447,7 @@ function renderWorkspaceState() {
 
   if (state.workspaceTab === 'activity') $('#workspaceCount').textContent = singleCollection ? `${state.activityEvents.length} 条记录` : '按集合查看历史';
   else if (approvedMode) $('#workspaceCount').textContent = `${approved.length} 已通过`;
-  else $('#workspaceCount').textContent = `${state.filtered.length} 项显示中`;
+  else $('#workspaceCount').textContent = state.filtered.length === state.images.length ? '' : `显示 ${state.filtered.length} / ${state.images.length}`;
 }
 
 function scopedCollections(project = '', scene = '') {
@@ -429,14 +502,19 @@ function renderCollections(active) {
   for (const [project, scenes] of [...projects].sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))) {
     const rows = [...scenes.values()].flat();
     const isProjectActive = (state.scope.kind === 'project' || state.scope.kind === 'scene') && state.scope.project === project;
-    navParts.push(`<section class="project-node"><button type="button" class="project-link${isProjectActive ? ' active' : ''}" data-project="${esc(project)}"><span>${esc(project)}</span><small>${rows.length}</small></button><div class="scene-list">`);
+    navParts.push(`<section class="project-node"><button type="button" class="project-link${isProjectActive ? ' active' : ''}" data-project="${esc(project)}" title="查看项目全部素材（${rows.length} 个集合）"><span>${esc(project)}</span></button><div class="scene-list">`);
     const optionRows = [];
-    for (const [scene, collections] of [...scenes].sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))) {
+    const sceneEntries = [...scenes].sort(([a], [b]) => a.localeCompare(b, 'zh-CN'));
+    // A lone placeholder scene adds a tree level without adding information.
+    const flatScenes = sceneEntries.length === 1 && sceneEntries[0][0] === '未分类';
+    for (const [scene, collections] of sceneEntries) {
       const isSceneActive = state.scope.kind === 'scene' && state.scope.project === project && state.scope.scene === scene;
-      navParts.push(`<button type="button" class="scene-link${isSceneActive ? ' active' : ''}" data-project="${esc(project)}" data-scene="${esc(scene)}"><span>${esc(scene)}</span><small>${collections.length}</small></button><div class="collection-list">`);
+      if (!flatScenes) navParts.push(`<button type="button" class="scene-link${isSceneActive ? ' active' : ''}" data-project="${esc(project)}" data-scene="${esc(scene)}"><span>${esc(scene)}</span></button>`);
+      navParts.push(`<div class="collection-list${flatScenes ? ' flat' : ''}">`);
       for (const collection of collections) {
         const taxonomy = collectionTaxonomy(collection);
-        navParts.push(`<button type="button" class="collection-link${state.scope.kind === 'collection' && collection.slug === active ? ' active' : ''}" data-collection="${esc(collection.slug)}"${collection.available === false ? ' disabled' : ''}><span class="collection-icon" aria-hidden="true"></span><span>${esc(collection.label)}</span><em>${esc(useLabel(taxonomy.use))}</em>${collection.available === false ? '<small>不可用</small>' : ''}</button>`);
+        const useTag = taxonomy.use === 'uncategorized' ? '' : `<em>${esc(useLabel(taxonomy.use))}</em>`;
+        navParts.push(`<button type="button" class="collection-link${state.scope.kind === 'collection' && collection.slug === active ? ' active' : ''}" data-collection="${esc(collection.slug)}" title="${esc(collection.label)}"${collection.available === false ? ' disabled' : ''}><span class="collection-icon" aria-hidden="true"></span><span>${esc(collection.label)}</span>${useTag}${collection.available === false ? '<small>不可用</small>' : ''}</button>`);
         optionRows.push(`<option value="${esc(collection.slug)}">${esc(collection.label)}${collection.available === false ? ' — 不可用' : ''}</option>`);
       }
       navParts.push('</div>');
@@ -450,7 +528,7 @@ function renderCollections(active) {
   nav.querySelectorAll('[data-collection]').forEach(button => {
     button.onclick = () => switchCollection(button.dataset.collection).catch(showError);
   });
-  nav.querySelectorAll('[data-project]').forEach(button => {
+  nav.querySelectorAll('[data-project]:not([data-scene])').forEach(button => {
     button.onclick = () => setProjectScope(button.dataset.project).catch(showError);
   });
   nav.querySelectorAll('[data-scene]').forEach(button => {
@@ -666,7 +744,7 @@ function renderQuickReview() {
   const status = asset.status || '';
   const statusElement = $('#quickReviewStatus');
   statusElement.textContent = statusDisplay(status);
-  statusElement.className = `quick-review-status ${status ? `status-${status}` : 'status-unreviewed'}`;
+  statusElement.className = `status-pill ${status ? `status-${status}` : 'status-unreviewed'}`;
   const reviewed = assets.filter(candidate => candidate.status).length;
   $('#quickReviewProgress').textContent = `${quick.index + 1} / ${assets.length} · ${reviewed} 已评价`;
   $('#quickReviewProgressBar').style.width = `${((quick.index + 1) / assets.length) * 100}%`;
@@ -685,6 +763,7 @@ function renderQuickReview() {
   }
   const comment = $('#quickReviewComment');
   if (document.activeElement !== comment) comment.value = asset.comment || '';
+  if (asset.comment) $('#quickReviewNote').open = true;
   const strip = $('#quickReviewFilmstrip');
   strip.innerHTML = assets.map((candidate, index) => `<button type="button" class="quick-review-frame${index === quick.index ? ' active' : ''}${candidate.status ? ` ${esc(candidate.status)}` : ''}" data-quick-index="${index}" aria-current="${index === quick.index ? 'true' : 'false'}" aria-label="${esc(`${index + 1}. ${candidate.name} · ${statusDisplay(candidate.status)}`)}"><img src="${esc(candidate.thumb)}" alt=""><span>${candidate.media_type === 'video' ? '▶' : index + 1}</span></button>`).join('');
   strip.querySelectorAll('[data-quick-index]').forEach(button => {
@@ -779,6 +858,11 @@ async function quickReviewDecision(status) {
     renderWorkspaceState();
     if (!quickReviewRequestIsCurrent(request, assetKey, runId)) return;
     quick.lastAction = {assetKey, collection: asset.collection, assetId: asset.asset_id, index: quick.index, status, comment: decisionComment, previousStatus, previousComment};
+    if (quick.index >= quick.keys.length - 1) {
+      const assets = quickReviewAssets();
+      const remaining = assets.filter(candidate => !candidate.status).length;
+      toast(remaining ? `已到最后一张 · 还有 ${remaining} 项未评价` : `本轮 ${assets.length} 项已全部评价，按 Esc 退出`);
+    }
     quickReviewMove(1, true);
     refreshReviewState().catch(showError);
   } finally {
@@ -867,26 +951,33 @@ function applyFilter() {
     return b.mtime - a.mtime;
   });
   state.filtered = rows;
+  // Scene and use only add information when the view spans collections.
+  const mixedScope = !isSingleCollectionScope();
   grid.innerHTML = rows.map((asset, index) => {
     const selected = state.selected.has(keyFor(asset));
     const taxonomy = assetTaxonomy(asset);
-    const statusClass = asset.status || 'needs-review';
-    const technical = [
+    const status = asset.status || '';
+    const badge = status
+      ? `<span class="badge ${esc(status)}">${esc(statusDisplay(status))}</span>`
+      : (asset.is_new ? '<span class="badge new" title="新素材" aria-label="新素材"></span>' : '');
+    const meta = [
+      asset.width && asset.height ? `${asset.width}×${asset.height}` : '',
       assetTypeLabel(asset),
-      asset.width && asset.height ? `${asset.width} × ${asset.height}` : '',
       formatBytes(asset.size),
-    ].filter(Boolean).map(value => `<span class="tech-chip">${esc(value)}</span>`).join('');
-    const path = asset.rel && asset.rel !== asset.name ? `<div class="path" title="${esc(asset.rel)}">${esc(asset.rel)}</div>` : '';
-    const note = taxonomy.note ? `<span class="context-note">${esc(taxonomy.note)}</span>` : '';
-    return `<article class="card ${selected ? 'selected' : ''}${state.selectionMode ? ' selection-ready' : ''}" data-i="${index}" tabindex="0" aria-pressed="${state.selectionMode ? String(selected) : 'false'}">
-      <div class="thumb-wrap"><img class="thumb" loading="lazy" src="${esc(asset.thumb)}" alt="${esc(asset.name)}">${asset.media_type === 'video' ? '<span class="video-play" aria-hidden="true">▶</span>' : ''}<span class="badge ${esc(statusClass)}">${esc(statusDisplay(asset.status))}</span><input class="select-toggle" data-select="${index}" type="checkbox" ${selected ? 'checked' : ''} ${state.selectionMode ? '' : 'tabindex="-1"'} aria-label="${selected ? '取消选择' : '选择'} ${esc(asset.name)}"></div>
-      <div class="caption">
-        <div class="name">${esc(asset.name)}</div>
-        <div class="content-chips"><span class="scene-chip">${esc(taxonomy.scene)}</span><span class="use-chip use-${esc(taxonomy.use)}">${esc(useLabel(taxonomy.use))}</span>${note}</div>
-        ${path}
-        <div class="tech-row">${technical}</div>
-        <div class="meta-row">${asset.is_new ? '<span class="new-dot">新素材</span>' : ''}${asset.comment ? '<span class="note-dot">有批注</span>' : ''}${asset.annotation_count ? `<span class="note-dot">${asset.annotation_count} 个标注</span>` : ''}${asset.family_name ? `<span class="family-chip">${esc(asset.family_name)}</span>` : ''}${asset.family_preferred ? '<span class="preferred-chip">偏好方案</span>' : ''}</div>
-      </div>
+    ].filter(Boolean).map(value => `<span>${esc(value)}</span>`).join('<span class="sep">·</span>');
+    const chips = [
+      mixedScope ? `<span class="chip">${esc(taxonomy.scene)}</span>` : '',
+      mixedScope && taxonomy.use !== 'uncategorized' ? `<span class="chip use-${esc(taxonomy.use)}">${esc(useLabel(taxonomy.use))}</span>` : '',
+      asset.comment ? `<span class="chip note" title="${esc(asset.comment)}">意见</span>` : '',
+      asset.annotation_count ? `<span class="chip note">${asset.annotation_count} 标注</span>` : '',
+      asset.family_name ? `<span class="chip" title="版本组">${esc(asset.family_name)}</span>` : '',
+      asset.family_preferred ? '<span class="chip preferred">偏好</span>' : '',
+    ].join('');
+    const quick = [['approved', '✓', '通过'], ['maybe', '?', '待定'], ['rejected', '✕', '拒绝']]
+      .map(([value, mark, label]) => `<button type="button" data-quick="${value}" class="${status === value ? 'on' : ''}" title="${label}" aria-label="${label} ${esc(asset.name)}">${mark}</button>`).join('');
+    return `<article class="card${selected ? ' selected' : ''}${status ? ` status-${esc(status)}` : ''}" data-i="${index}" tabindex="0" aria-pressed="${state.selectionMode ? String(selected) : 'false'}" title="${esc(asset.rel || asset.name)}">
+      <div class="thumb-wrap"><img class="thumb" loading="lazy" decoding="async" src="${esc(asset.thumb)}" alt="${esc(asset.name)}">${asset.media_type === 'video' ? '<span class="video-play" aria-hidden="true">▶</span>' : ''}${badge}<input class="select-toggle" data-select="${index}" type="checkbox" ${selected ? 'checked' : ''} ${state.selectionMode ? '' : 'tabindex="-1"'} aria-label="${selected ? '取消选择' : '选择'} ${esc(asset.name)}"><div class="card-actions">${quick}</div></div>
+      <div class="caption"><div class="name">${esc(asset.name)}</div><div class="card-meta">${meta}</div><div class="card-chips">${chips}</div></div>
     </article>`;
   }).join('');
   $('#empty').classList.toggle('hidden', rows.length > 0);
@@ -894,6 +985,12 @@ function applyFilter() {
     const index = Number(element.dataset.i);
     element.onclick = event => {
       if (event.target.closest('[data-select]')) return;
+      const quickButton = event.target.closest('[data-quick]');
+      if (quickButton) {
+        event.stopPropagation();
+        cardReview(index, quickButton.dataset.quick).catch(showError);
+        return;
+      }
       if (state.selectionMode || event.ctrlKey || event.metaKey || event.shiftKey) {
         if (!state.selectionMode) setSelectionMode(true, false);
         if (event.shiftKey) selectRange(index); else toggleSelection(index);
@@ -902,6 +999,13 @@ function applyFilter() {
       openAt(index);
     };
     element.onkeydown = event => {
+      if (event.target !== element) return;
+      const reviewKey = {a: 'approved', 1: 'approved', m: 'maybe', 2: 'maybe', r: 'rejected', 3: 'rejected'}[event.key.toLowerCase()];
+      if (reviewKey && !event.ctrlKey && !event.metaKey && !state.selectionMode) {
+        event.preventDefault();
+        cardReview(index, reviewKey).catch(showError);
+        return;
+      }
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       if (state.selectionMode) {
@@ -924,6 +1028,40 @@ function applyFilter() {
   updateBulk();
 }
 
+// Selection changes only touch card classes; re-rendering the grid would
+// rebuild every thumbnail on each click.
+function syncSelectionUI() {
+  grid.querySelectorAll('.card').forEach(element => {
+    const asset = state.filtered[Number(element.dataset.i)];
+    if (!asset) return;
+    const selected = state.selected.has(keyFor(asset));
+    element.classList.toggle('selected', selected);
+    element.setAttribute('aria-pressed', state.selectionMode ? String(selected) : 'false');
+    const toggle = element.querySelector('[data-select]');
+    if (toggle) {
+      toggle.checked = selected;
+      toggle.tabIndex = state.selectionMode ? 0 : -1;
+      toggle.setAttribute('aria-label', `${selected ? '取消选择' : '选择'} ${asset.name}`);
+    }
+  });
+  updateBulk();
+}
+
+// One-click decision from the grid: clicking the active decision clears it.
+async function cardReview(index, status) {
+  const asset = state.filtered[index];
+  if (!asset || !asset.asset_id) return;
+  const next = (asset.status || '') === status ? '' : status;
+  const key = keyFor(asset);
+  await apiPost('/api/review', {collection: asset.collection, asset_id: asset.asset_id, status: next, comment: asset.comment || ''});
+  updateLocal(key, {status: next, is_new: false});
+  applyFilter();
+  const card = grid.querySelector(`.card[data-i="${state.filtered.findIndex(item => keyFor(item) === key)}"]`);
+  (card || grid.querySelector(`.card[data-i="${Math.min(index, state.filtered.length - 1)}"]`))?.focus({preventScroll: true});
+  toast(next ? `${statusDisplay(next)} · ${asset.name}` : `已清除审核状态 · ${asset.name}`);
+  refreshReviewState().catch(showError);
+}
+
 function setMenu(select, placeholder, items) {
   select.innerHTML = `<option value="">${esc(placeholder)}</option>` + items.map(item =>
     `<option value="${esc(item.value)}"${item.disabled ? ' disabled' : ''}>${esc(item.label)}</option>`
@@ -943,7 +1081,7 @@ function setSelectionMode(enabled, render = true) {
   toggle.classList.toggle('active', state.selectionMode);
   toggle.setAttribute('aria-pressed', String(state.selectionMode));
   toggle.textContent = state.selectionMode ? '完成选择' : '多选';
-  if (render) applyFilter();
+  if (render) syncSelectionUI();
 }
 
 function selectAllVisible() {
@@ -951,7 +1089,7 @@ function selectAllVisible() {
   state.filtered.forEach(asset => state.selected.add(keyFor(asset)));
   state.selectionAnchor = state.filtered.length ? 0 : null;
   state.selectionAnchorKey = state.filtered.length ? keyFor(state.filtered[0]) : '';
-  applyFilter();
+  syncSelectionUI();
 }
 
 function toggleSelection(index) {
@@ -961,7 +1099,7 @@ function toggleSelection(index) {
   state.selected.has(key) ? state.selected.delete(key) : state.selected.add(key);
   state.selectionAnchor = index;
   state.selectionAnchorKey = key;
-  applyFilter();
+  syncSelectionUI();
 }
 
 function selectRange(index) {
@@ -976,7 +1114,7 @@ function selectRange(index) {
   for (let position = start; position <= end; position += 1) state.selected.add(keyFor(state.filtered[position]));
   state.selectionAnchor = index;
   state.selectionAnchorKey = keyFor(asset);
-  applyFilter();
+  syncSelectionUI();
 }
 
 function updateCollectionActions() {
@@ -994,7 +1132,7 @@ function updateCollectionActions() {
     if (review.complete) items.splice(1, 0, {value: 'reopen', label: '重新打开审核'});
     else if (!review.unreviewed) items.splice(1, 0, {value: 'complete', label: review.stale ? '重新完成审核' : '标记审核完成'});
   }
-  setMenu($('#actions'), '更多操作…', items);
+  setMenu($('#actions'), '更多…', items);
 }
 
 function updateBulk() {
@@ -1048,11 +1186,16 @@ function familyById(familyId, collection = '') {
 
 function renderReviewDecision(asset) {
   const status = asset?.status || '';
-  const labels = {approved: '已通过', maybe: '待定', rejected: '已拒绝', '': '待人工审核'};
   const indicator = $('#reviewDecision');
-  indicator.textContent = labels[status] || status;
-  indicator.className = `review-decision ${status ? `decision-${status}` : 'decision-unreviewed'}`;
-  $('#reviewStatus').value = status;
+  indicator.textContent = statusDisplay(status);
+  indicator.className = `status-pill ${status ? `decision-${status}` : 'decision-unreviewed'}`;
+  const group = $('#reviewStatus');
+  group.dataset.value = status;
+  group.querySelectorAll('[data-status]').forEach(button => {
+    const active = button.dataset.status === status;
+    button.classList.toggle('decision-active', active);
+    button.setAttribute('aria-checked', String(active));
+  });
 }
 
 function metadataValue(value) {
@@ -1085,13 +1228,14 @@ function renderProvenance(asset) {
 
 function updateAssetActions(asset) {
   const items = [
+    ...(asset?.status ? [{value: 'clear', label: '清除审核状态'}] : []),
     {value: 'history', label: '审核历史'},
     {value: 'undo', label: '撤销上次审核变更'},
     {value: 'copy-path', label: '复制相对路径'},
     {value: 'copy-link', label: '复制审核链接'},
     {value: 'open-original', label: '打开原文件'},
   ];
-  setMenu($('#assetActions'), '更多操作…', items);
+  setMenu($('#assetActions'), '更多…', items);
 }
 
 function renderFamilyRow(asset) {
@@ -1139,11 +1283,16 @@ function openAt(index, updateUrl = true) {
     full.alt = asset.name;
   }
   $('#filename').textContent = asset.name;
-  const resolution = asset.width && asset.height ? `${asset.width}×${asset.height}` : (isVideo ? 'video' : '?×?');
-  $('#details').textContent = `${asset.rel} · ${resolution} · ${formatBytes(asset.size)}`;
-  document.querySelector('.annotation-toolbar')?.classList.toggle('hidden', isVideo);
+  const resolution = asset.width && asset.height ? `${asset.width}×${asset.height}` : (isVideo ? '视频' : '');
+  $('#details').textContent = [asset.rel !== asset.name ? asset.rel : '', resolution, formatBytes(asset.size)].filter(Boolean).join(' · ');
+  $('#stagePosition').textContent = `${state.current + 1} / ${state.filtered.length}`;
+  document.querySelector('.annotation-field')?.classList.toggle('hidden', isVideo);
+  if (stageZoom.key !== keyFor(asset)) {
+    resetStageZoom();
+    stageZoom.key = keyFor(asset);
+  }
   $('#comment').value = asset.comment || '';
-  $('#commentState').textContent = '已保存';
+  $('#commentState').textContent = '自动保存';
   renderReviewDecision(asset);
   renderFamilyRow(asset);
   renderProvenance(asset);
@@ -1165,6 +1314,7 @@ function openAt(index, updateUrl = true) {
 
 function close() {
   modal.classList.add('hidden');
+  stageZoom.key = '';
   $('#full').src = '';
   const video = $('#videoFull');
   video.pause();
@@ -1185,11 +1335,39 @@ function close() {
 
 const step = amount => openAt(state.current + amount);
 
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
-  return (bytes / 1073741824).toFixed(2) + ' GB';
+// Focused-view zoom: transform the image surface so annotation geometry,
+// which is measured from its bounding box, stays aligned at any scale.
+const stageZoom = {scale: 1, x: 0, y: 0, drag: null, key: ''};
+
+function applyStageZoom() {
+  $('#imageSurface').style.transform = stageZoom.scale === 1 ? '' : `translate(${stageZoom.x}px, ${stageZoom.y}px) scale(${stageZoom.scale})`;
+  $('#zoomLevel').textContent = stageZoom.scale === 1 ? '适应' : `${Math.round(stageZoom.scale * 100)}%`;
+}
+
+function resetStageZoom() {
+  Object.assign(stageZoom, {scale: 1, x: 0, y: 0, drag: null});
+  applyStageZoom();
+}
+
+function zoomStageAt(scale, clientX, clientY) {
+  const viewport = $('#stageViewport').getBoundingClientRect();
+  const next = Math.max(1, Math.min(10, scale));
+  const ratio = next / stageZoom.scale;
+  const px = (clientX ?? viewport.left + viewport.width / 2) - (viewport.left + viewport.width / 2);
+  const py = (clientY ?? viewport.top + viewport.height / 2) - (viewport.top + viewport.height / 2);
+  stageZoom.x = next === 1 ? 0 : px - (px - stageZoom.x) * ratio;
+  stageZoom.y = next === 1 ? 0 : py - (py - stageZoom.y) * ratio;
+  stageZoom.scale = next;
+  applyStageZoom();
+}
+
+function toggleActualSize(event) {
+  const image = $('#full');
+  if (stageZoom.scale !== 1 || !image.naturalWidth || !image.clientWidth) {
+    resetStageZoom();
+    return;
+  }
+  zoomStageAt(Math.max(2, image.naturalWidth / image.clientWidth), event?.clientX, event?.clientY);
 }
 
 function updateLocal(assetOrRel, patch) {
@@ -1207,14 +1385,19 @@ async function review(status) {
   applyFilter();
   await refreshReviewState();
   const index = state.filtered.findIndex(item => keyFor(item) === keyFor(asset));
-  if (index >= 0) openAt(index); else close();
+  // When the decision moves the asset out of the current filter (for example
+  // while working through "待审"), continue with the asset that took its place.
+  if (index >= 0) openAt(index);
+  else if (state.filtered.length) openAt(Math.min(state.current, state.filtered.length - 1));
+  else close();
+  if (index < 0) toast(`${statusDisplay(status)} · ${asset.name}`);
 }
 
 let commentSaveTimer = null;
 
 async function saveCommentSnapshot(assetKey, collection, assetId, comment) {
   const current = state.filtered[state.current];
-  if (current && keyFor(current) === assetKey) $('#commentState').textContent = 'Saving…';
+  if (current && keyFor(current) === assetKey) $('#commentState').textContent = '保存中…';
   await apiPost('/api/comment', {collection, asset_id: assetId, comment});
   updateLocal(assetKey, {comment, is_new: false});
   applyFilter();
@@ -1222,7 +1405,7 @@ async function saveCommentSnapshot(assetKey, collection, assetId, comment) {
   if (index >= 0 && !modal.classList.contains('hidden')) state.current = index;
   await refreshReviewState();
   const active = state.filtered[state.current];
-  if (active && keyFor(active) === assetKey && $('#comment').value === comment) $('#commentState').textContent = 'Saved';
+  if (active && keyFor(active) === assetKey && $('#comment').value === comment) $('#commentState').textContent = '已保存';
 }
 
 function scheduleCommentSave() {
@@ -1233,7 +1416,7 @@ function scheduleCommentSave() {
   const collection = asset.collection;
   const assetId = asset.asset_id;
   const comment = $('#comment').value;
-  $('#commentState').textContent = 'Unsaved';
+  $('#commentState').textContent = '未保存';
   commentSaveTimer = setTimeout(() => {
     commentSaveTimer = null;
     saveCommentSnapshot(assetKey, collection, assetId, comment).catch(showError);
@@ -1273,12 +1456,12 @@ async function showHistory(assetIdOverride) {
   if (!asset) return;
   const params = new URLSearchParams({collection: asset.collection, asset_id: asset.asset_id || '', rel: asset.rel});
   const response = await fetch('/api/review-history?' + params, {cache: 'no-store'});
-  if (!response.ok) throw new Error('History request failed');
+  if (!response.ok) throw new Error('无法读取审核历史');
   const data = await response.json();
   const panel = $('#historyPanel');
   panel.innerHTML = data.events.length ? data.events.map(event =>
-    `<div class="history-event"><strong>${esc(event.action.replaceAll('_', ' '))}</strong><span>${esc(event.created_at)} · ${esc(event.old_status || 'unreviewed')} → ${esc(event.new_status || 'unreviewed')}${event.undone_at ? ' · undone' : ''}</span></div>`
-  ).join('') : '<div class="history-event"><span>No review changes yet.</span></div>';
+    `<div class="history-event"><strong>${esc(statusDisplay(event.old_status))} → ${esc(statusDisplay(event.new_status))}${event.undone_at ? ' · 已撤销' : ''}</strong><span>${esc(formatEventTime(event.created_at))}${event.new_comment ? ' · ' + esc(event.new_comment) : ''}</span></div>`
+  ).join('') : '<div class="history-event"><span>暂无审核变更。</span></div>';
   panel.classList.remove('hidden');
 }
 
@@ -1294,14 +1477,14 @@ async function copyPath() {
   const asset = state.filtered[state.current];
   if (!asset) return;
   await navigator.clipboard.writeText(asset.rel);
-  $('#summary').textContent = 'Relative path copied';
+  toast('已复制相对路径');
 }
 
 async function copyReviewLink() {
   const asset = state.filtered[state.current];
   if (!asset) return;
   await navigator.clipboard.writeText(location.origin + assetUrl(asset));
-  $('#summary').textContent = 'Review link copied';
+  toast('已复制审核链接');
 }
 
 async function loadAnnotations(asset) {
@@ -1312,7 +1495,7 @@ async function loadAnnotations(asset) {
   }
   const params = new URLSearchParams({collection: asset.collection, asset_id: asset.asset_id});
   const response = await fetch('/api/annotations?' + params, {cache: 'no-store'});
-  if (!response.ok) throw new Error('Annotation request failed');
+  if (!response.ok) throw new Error('无法读取标注');
   const data = await response.json();
   state.annotations = data.annotations || [];
   renderAnnotations();
@@ -1329,18 +1512,18 @@ function renderAnnotations() {
     element.type = 'button';
     element.dataset.annotationId = annotation.annotation_id;
     element.className = `${annotation.kind === 'region' ? 'annotation-region' : 'annotation-pin'}${annotation.resolved ? ' resolved' : ''}${annotation.stale ? ' stale' : ''}`;
-    element.title = annotation.text || `${annotation.kind} annotation ${index + 1}`;
+    element.title = annotation.text || `标注 ${index + 1}`;
     if (annotation.kind === 'region') {
       element.style.left = `${annotation.x * 100}%`;
       element.style.top = `${annotation.y * 100}%`;
       element.style.width = `${annotation.w * 100}%`;
       element.style.height = `${annotation.h * 100}%`;
-      element.setAttribute('aria-label', `Region annotation ${index + 1}: ${annotation.text || 'No note'}`);
+      element.setAttribute('aria-label', `区域标注 ${index + 1}：${annotation.text || '无文字'}`);
     } else {
       element.style.left = `${annotation.x * 100}%`;
       element.style.top = `${annotation.y * 100}%`;
       element.textContent = String(index + 1);
-      element.setAttribute('aria-label', `Point annotation ${index + 1}: ${annotation.text || 'No note'}`);
+      element.setAttribute('aria-label', `点标注 ${index + 1}：${annotation.text || '无文字'}`);
     }
     element.onclick = event => {
       event.stopPropagation();
@@ -1351,13 +1534,16 @@ function renderAnnotations() {
   });
   panel.classList.toggle('hidden', visible.length === 0);
   panel.innerHTML = visible.map((annotation, index) => {
-    const stateLabel = annotation.stale ? 'stale after content change' : (annotation.resolved ? 'resolved' : 'open');
+    const stateLabel = annotation.stale ? '素材已变更，位置可能失效' : (annotation.resolved ? '已解决' : '待处理');
     return `<div class="annotation-row${annotation.stale ? ' stale' : ''}" data-annotation-row="${esc(annotation.annotation_id)}">
       <span class="annotation-index">${index + 1}</span>
-      <div class="annotation-copy"><strong>${esc(annotation.text || 'Untitled annotation')}</strong><span>${esc(annotation.kind)} · ${esc(stateLabel)}</span></div>
-      <div class="annotation-actions"><button type="button" data-annotation-resolve="${esc(annotation.annotation_id)}">${annotation.resolved ? 'Reopen' : 'Resolve'}</button><button type="button" data-annotation-delete="${esc(annotation.annotation_id)}">Delete</button></div>
+      <div class="annotation-copy"><strong>${esc(annotation.text || '（无文字）')}</strong><span>${annotation.kind === 'region' ? '区域' : '点'} · ${esc(stateLabel)}</span></div>
+      <div class="annotation-actions"><button type="button" data-annotation-resolve="${esc(annotation.annotation_id)}">${annotation.resolved ? '重开' : '解决'}</button><button type="button" data-annotation-delete="${esc(annotation.annotation_id)}">删除</button></div>
     </div>`;
   }).join('');
+  panel.querySelectorAll('[data-annotation-row]').forEach(row => {
+    row.onclick = event => { if (!event.target.closest('button')) flashAnnotation(row.dataset.annotationRow); };
+  });
   panel.querySelectorAll('[data-annotation-resolve]').forEach(button => {
     button.onclick = () => toggleAnnotationResolved(button.dataset.annotationResolve).catch(showError);
   });
@@ -1375,16 +1561,26 @@ function normalizedPoint(event) {
   };
 }
 
+const ANNOTATION_HELP = {
+  point: '在图上点击需要修改的位置（Esc 取消）。',
+  region: '在图上拖出需要修改的区域（Esc 取消）。',
+  '': '需要指向具体位置时，选择“点”或“区域”。',
+};
+
+function renderAnnotationModeButtons() {
+  document.querySelectorAll('#annotationMode [data-mode]').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.mode === state.annotationMode));
+  });
+  $('#stageViewport')?.classList.toggle('annotating', Boolean(state.annotationMode));
+}
+
 function setAnnotationMode(mode) {
-  state.annotationMode = mode || null;
+  // Clicking the active mode again turns it off.
+  state.annotationMode = mode && mode !== state.annotationMode ? mode : null;
   state.annotationStart = null;
   $('#annotationLayer').classList.toggle('drawing', Boolean(state.annotationMode));
-  $('#annotationMode').value = state.annotationMode || '';
-  $('#annotationHelp').textContent = state.annotationMode === 'point'
-    ? 'Click the exact point you want changed.'
-    : state.annotationMode === 'region'
-      ? 'Drag a rectangle around the area you want changed.'
-      : 'Choose Point or Region when you need precise feedback.';
+  $('#annotationHelp').textContent = ANNOTATION_HELP[state.annotationMode || ''];
+  renderAnnotationModeButtons();
 }
 
 function cancelAnnotationMode() {
@@ -1395,8 +1591,16 @@ function cancelAnnotationMode() {
     layer.classList.remove('drawing');
     layer.querySelectorAll('.annotation-draft').forEach(element => element.remove());
   }
-  if ($('#annotationMode')) $('#annotationMode').value = '';
-  if ($('#annotationHelp')) $('#annotationHelp').textContent = 'Choose Point or Region when you need precise feedback.';
+  if ($('#annotationHelp')) $('#annotationHelp').textContent = ANNOTATION_HELP[''];
+  renderAnnotationModeButtons();
+}
+
+function flashAnnotation(annotationId) {
+  const marker = document.querySelector(`#annotationLayer [data-annotation-id="${CSS.escape(annotationId)}"]`);
+  if (!marker) return;
+  marker.classList.remove('flash');
+  void marker.offsetWidth;
+  marker.classList.add('flash');
 }
 
 async function createSpatialAnnotation(kind, geometry) {
@@ -1493,7 +1697,7 @@ function annotationPointerUp(event) {
   const w = Math.abs(point.x - start.x);
   const h = Math.abs(point.y - start.y);
   if (w < 0.01 || h < 0.01) {
-    $('#annotationHelp').textContent = 'Drag a larger region.';
+    $('#annotationHelp').textContent = '框选范围太小，请拖出更大的区域。';
     return;
   }
   createSpatialAnnotation('region', {x, y, w, h}).catch(showError);
@@ -1506,14 +1710,14 @@ async function groupVariants() {
   if (collections.length !== 1) throw new Error('跨集合选择不能建立版本关系。');
   const collection = collections[0];
   const familyIds = [...new Set(assets.map(asset => asset.family_id).filter(Boolean))];
-  if (familyIds.length > 1) throw new Error('Selected assets span multiple existing families. Remove them first or group one family at a time.');
+  if (familyIds.length > 1) throw new Error('选中的素材属于不同版本组；请先移出，或一次只处理一个版本组。');
   if (familyIds.length === 1) {
     const ungrouped = assets.filter(asset => !asset.family_id);
-    if (!ungrouped.length) throw new Error('Those assets are already in the same family.');
+    if (!ungrouped.length) throw new Error('这些素材已在同一个版本组中。');
     await apiPost('/api/family', {collection, action: 'add', family_id: familyIds[0], asset_ids: ungrouped.map(asset => asset.asset_id)});
   } else {
-    const suggested = assets.map(asset => asset.name.replace(/\.[^.]+$/, '').replace(/[-_ ]?(v|variant|concept)?\d+$/i, '')).filter(Boolean)[0] || 'Variant family';
-    const name = window.prompt('Name this variant family', suggested);
+    const suggested = assets.map(asset => asset.name.replace(/\.[^.]+$/, '').replace(/[-_ ]?(v|variant|concept)?\d+$/i, '')).filter(Boolean)[0] || '版本组';
+    const name = window.prompt('为版本组命名', suggested);
     if (!name) return;
     await apiPost('/api/family', {collection, action: 'create', name, asset_ids: assets.map(asset => asset.asset_id)});
   }
@@ -1569,7 +1773,7 @@ function clearSelection({exit = false} = {}) {
     setSelectionMode(false);
     return;
   }
-  applyFilter();
+  syncSelectionUI();
 }
 
 function allSelectedAssets() {
@@ -1659,10 +1863,10 @@ function renderCompare() {
   $('#compareLink').value = state.compareLinked ? 'linked' : 'independent';
 
   if (state.compareMode === 'side') {
-    $('#compareHint').textContent = 'Scroll to zoom, drag to pan, double-click to reset. Linked view keeps variants aligned.';
+    $('#compareHint').textContent = '滚轮缩放 · 拖动平移 · 双击重置；联动缩放让各方案保持对齐。';
     gridElement.className = 'compare-grid';
     gridElement.innerHTML = assets.map((asset, index) =>
-      `<article class="compare-item"><div class="compare-viewport" data-compare-viewport="${index}"><img class="compare-pan-image" data-compare-image="${index}" src="${esc(assetSrc(asset))}" alt=""></div><div><strong>${esc(asset.name)}</strong><span>${esc(asset.status || 'unreviewed')}${asset.comment ? ' · ' + esc(asset.comment) : ''}</span></div></article>`
+      `<article class="compare-item"><div class="compare-viewport" data-compare-viewport="${index}"><img class="compare-pan-image" data-compare-image="${index}" src="${esc(assetSrc(asset))}" alt=""></div><div><strong>${esc(asset.name)}</strong><span>${esc(statusDisplay(asset.status))}${asset.comment ? ' · ' + esc(asset.comment) : ''}</span></div></article>`
     ).join('');
     attachCompareViewportHandlers();
     applyCompareTransforms();
@@ -1672,8 +1876,8 @@ function renderCompare() {
   const [left, right] = assets;
   const difference = state.compareMode === 'difference';
   $('#compareHint').textContent = difference
-    ? 'Difference view · scroll to zoom and drag to inspect changes.'
-    : 'Blend view · scroll to zoom and drag while comparing composition.';
+    ? '差异视图 · 亮处即变化，滚轮缩放查看细节。'
+    : '叠加视图 · 拖动滑块混合两张图，比较构图。';
   gridElement.className = 'compare-grid compare-single';
   gridElement.innerHTML = `<div class="compare-stack ${difference ? 'difference' : ''}" data-compare-viewport="0">
     <img class="compare-bottom" data-compare-image="0" src="${esc(assetSrc(left))}" alt="${esc(left.name)}">
@@ -1718,7 +1922,23 @@ function formatEventTime(value) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
+  return date.toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false});
+}
+
+function formatEventDay(value) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return '更早';
+  const today = new Date();
+  const days = Math.round((new Date(today.toDateString()) - new Date(date.toDateString())) / 86400000);
+  if (days === 0) return '今天';
+  if (days === 1) return '昨天';
+  return date.toLocaleDateString('zh-CN', {year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric', month: 'long', day: 'numeric', weekday: 'short'});
+}
+
+function formatEventClock(value) {
+  const date = new Date(value);
+  if (!value || Number.isNaN(date.getTime())) return value || '';
+  return date.toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', hour12: false});
 }
 
 function activityAsset(event) {
@@ -1727,17 +1947,43 @@ function activityAsset(event) {
   return state.images.find(asset => (rel && asset.rel === rel) || (assetId && asset.asset_id === assetId)) || null;
 }
 
+// Mirrors activity.event_summary in Chinese. The server summary stays English
+// because agents and the CLI read it as a stable contract.
+function activitySummaryText(event) {
+  const action = String(event.action || '');
+  const details = event.details && typeof event.details === 'object' ? event.details : {};
+  const subject = String(event.rel || '').trim() || String(details.name || details.family_id || '集合');
+  if (action === 'review' || action === 'batch') return `${subject}：${statusDisplay(event.old_status)} → ${statusDisplay(event.new_status)}`;
+  if (action === 'comment') return `更新审核意见：${subject}`;
+  if (action === 'asset_added') return `新素材：${subject}`;
+  if (action === 'asset_renamed') return `重命名：${details.old_rel || subject} → ${details.new_rel || subject}`;
+  if (action === 'asset_changed') return `素材内容已变更，需重新审核：${subject}`;
+  if (action === 'asset_missing') return `素材缺失：${subject}`;
+  if (action === 'asset_restored') return `素材已恢复：${subject}`;
+  if (action === 'collection_complete') return '集合审核已完成';
+  if (action === 'collection_reopen') return '集合审核已重新打开';
+  if (action === 'metadata_updated') return `更新来源信息：${subject}`;
+  const verbs = {
+    family_created: '建立版本组', family_deleted: '删除版本组', family_renamed: '重命名版本组',
+    family_members_added: '加入版本组', family_members_removed: '移出版本组', family_preferred_changed: '更换偏好方案',
+    annotation_created: '新增标注', annotation_updated: '更新标注', annotation_deleted: '删除标注', annotation_hash_mismatch: '标注位置可能失效',
+  };
+  if (verbs[action]) return `${verbs[action]}：${subject}`;
+  return event.summary || action;
+}
+
 function activityPresentation(event) {
   const action = String(event.action || '').toLowerCase();
   const status = String(event.new_status || '').toLowerCase();
-  if ((action === 'review' || action === 'batch') && status === 'approved') return {tone: 'approved', mark: '✓', label: 'Review decision'};
-  if ((action === 'review' || action === 'batch') && status === 'rejected') return {tone: 'rejected', mark: '×', label: 'Review decision'};
-  if ((action === 'review' || action === 'batch') && status === 'maybe') return {tone: 'maybe', mark: '?', label: 'Review decision'};
-  if (action === 'asset_added' || action === 'asset_restored') return {tone: 'added', mark: '+', label: 'Collection'};
-  if (action === 'comment' || action.startsWith('annotation_')) return {tone: 'note', mark: '•', label: 'Feedback'};
-  if (action.startsWith('family_')) return {tone: 'family', mark: '◇', label: 'Variant family'};
-  if (action === 'collection_complete') return {tone: 'approved', mark: '✓', label: 'Collection'};
-  return {tone: 'neutral', mark: '•', label: action.replaceAll('_', ' ') || 'Activity'};
+  if ((action === 'review' || action === 'batch') && status === 'approved') return {tone: 'approved', mark: '✓', label: '审核决定'};
+  if ((action === 'review' || action === 'batch') && status === 'rejected') return {tone: 'rejected', mark: '×', label: '审核决定'};
+  if ((action === 'review' || action === 'batch') && status === 'maybe') return {tone: 'maybe', mark: '?', label: '审核决定'};
+  if (action === 'asset_added' || action === 'asset_restored') return {tone: 'added', mark: '+', label: '素材入库'};
+  if (action === 'comment' || action.startsWith('annotation_')) return {tone: 'note', mark: '•', label: '意见与标注'};
+  if (action.startsWith('family_')) return {tone: 'family', mark: '◇', label: '版本组'};
+  if (action === 'metadata_updated' || action.startsWith('metadata')) return {tone: 'neutral', mark: 'i', label: '来源信息'};
+  if (action === 'collection_complete') return {tone: 'approved', mark: '✓', label: '集合审核完成'};
+  return {tone: 'neutral', mark: '•', label: action.replaceAll('_', ' ') || '活动'};
 }
 
 async function loadActivity() {
@@ -1750,18 +1996,22 @@ async function loadActivity() {
     return;
   }
   const response = await fetch(`/api/activity?collection=${encodeURIComponent(state.active)}&limit=200`, {cache: 'no-store'});
-  if (!response.ok) throw new Error('Activity request failed');
+  if (!response.ok) throw new Error('无法读取审核记录');
   const data = await response.json();
   state.activityEvents = data.events || [];
-  $('#activitySummary').textContent = `${state.activityEvents.length} recent events`;
+  $('#activitySummary').textContent = `最近 ${state.activityEvents.length} 条`;
+  let lastDay = '';
   $('#activityList').innerHTML = state.activityEvents.length
     ? [...state.activityEvents].reverse().map(event => {
         const presentation = activityPresentation(event);
         const asset = activityAsset(event);
-        const thumbnail = asset ? `<img class="activity-thumb" src="${esc(asset.thumb)}" alt="">` : '';
-        return `<article class="activity-event ${presentation.tone}"><span class="activity-marker" aria-hidden="true">${presentation.mark}</span><div class="activity-body">${thumbnail}<div class="activity-copy"><strong>${esc(event.summary || event.action)}</strong><span>${esc(presentation.label)}</span></div></div><time datetime="${esc(event.created_at || '')}">${esc(formatEventTime(event.created_at))}</time></article>`;
+        const thumbnail = asset ? `<img class="activity-thumb" loading="lazy" src="${esc(asset.thumb)}" alt="">` : '';
+        const day = formatEventDay(event.created_at);
+        const heading = day !== lastDay ? `<div class="activity-day">${esc(day)}</div>` : '';
+        lastDay = day;
+        return `${heading}<article class="activity-event ${presentation.tone}"><span class="activity-marker" aria-hidden="true">${presentation.mark}</span><div class="activity-body">${thumbnail}<div class="activity-copy"><strong title="${esc(event.summary || '')}">${esc(activitySummaryText(event))}</strong><span>${esc(presentation.label)}</span></div></div><time datetime="${esc(event.created_at || '')}" title="${esc(formatEventTime(event.created_at))}">${esc(formatEventClock(event.created_at))}</time></article>`;
       }).join('')
-    : '<div class="activity-empty">No activity yet.</div>';
+    : '<div class="activity-empty">还没有审核记录。</div>';
   renderWorkspaceState();
 }
 
@@ -1842,9 +2092,10 @@ function downloadJson(filename, payload) {
 async function exportHandoff() {
   if (!state.active || !isSingleCollectionScope()) return;
   const response = await fetch(`/api/handoff?collection=${encodeURIComponent(state.active)}`, {cache: 'no-store'});
-  if (!response.ok) throw new Error('Approved handoff request failed');
+  if (!response.ok) throw new Error('无法导出交接清单');
   const payload = await response.json();
   downloadJson(`${state.active}-approved-handoff.json`, payload);
+  toast('已导出交接清单');
 }
 
 async function handleCollectionAction(value) {
@@ -1875,7 +2126,8 @@ async function handleAssetAction(value) {
   if (!value) return;
   const asset = state.filtered[state.current];
   if (!asset) return;
-  if (value === 'history') await showHistory();
+  if (value === 'clear') await review('');
+  else if (value === 'history') await showHistory();
   else if (value === 'undo') await undoReview();
   else if (value === 'copy-path') await copyPath();
   else if (value === 'copy-link') await copyReviewLink();
@@ -1891,35 +2143,41 @@ async function handleFamilyAction(value) {
 }
 
 function paletteCommands() {
+  // `alias` keeps English keywords searchable alongside the Chinese labels.
   const commands = [
-    {label: 'View: Gallery', run: () => setWorkspaceTab('gallery')},
-    {label: 'View: Activity', run: () => setWorkspaceTab('activity')},
-    {label: 'View: Approved', run: () => setWorkspaceTab('approved')},
-    {label: 'Focus search', run: () => $('#search').focus()},
-    {label: 'Save current view…', run: () => saveCurrentView()},
-    {label: 'Refresh collection', run: () => reloadCurrentScope(true)},
+    {label: '视图：素材', alias: 'gallery', run: () => setWorkspaceTab('gallery')},
+    {label: '视图：审核记录', alias: 'activity history', run: () => setWorkspaceTab('activity')},
+    {label: '视图：已通过', alias: 'approved handoff', run: () => setWorkspaceTab('approved')},
+    {label: '快速审核', alias: 'quick review cull', run: () => startQuickReview()},
+    {label: '搜索素材', alias: 'search find', keys: '/', run: () => $('#search').focus()},
+    {label: '只看待审', alias: 'unreviewed filter', run: () => setStatusFilter('unreviewed')},
+    {label: '保存当前视图…', alias: 'save view', run: () => saveCurrentView()},
+    {label: '刷新当前范围', alias: 'refresh reload', run: () => reloadCurrentScope(true)},
+    {label: '切换明暗主题', alias: 'theme dark light', run: () => cycleTheme()},
+    {label: '缩略图：小 / 中 / 大', alias: 'density thumbnail size', run: () => setDensity((Number(grid.dataset.density) + 1) % 3)},
   ];
   if (isSingleCollectionScope()) {
     commands.push(
-      {label: 'Open review report', run: () => window.open(`/report?collection=${encodeURIComponent(state.active)}&present=1&refresh=1`, '_blank', 'noopener')},
-      {label: 'Export approved handoff', run: () => exportHandoff()},
+      {label: '打开审核报告', alias: 'report', run: () => window.open(`/report?collection=${encodeURIComponent(state.active)}&present=1&refresh=1`, '_blank', 'noopener')},
+      {label: '导出已通过交接清单', alias: 'export handoff', run: () => exportHandoff()},
     );
   }
-  for (const saved of state.savedViews) commands.push({label: `Saved view: ${saved.name}`, run: () => applySavedView(saved.id)});
-  if (state.filtered.length) commands.push({label: `Select all visible (${state.filtered.length})`, run: () => selectAllVisible()});
-  if (state.selected.size >= 2) commands.push({label: 'Compare selected assets', run: () => openCompare()});
+  for (const saved of state.savedViews) commands.push({label: `已保存视图：${saved.name}`, alias: 'saved view', run: () => applySavedView(saved.id)});
+  if (state.filtered.length) commands.push({label: `全选当前结果（${state.filtered.length}）`, alias: 'select all', run: () => selectAllVisible()});
+  if (state.selected.size >= 2) commands.push({label: '比较选中方案', alias: 'compare', run: () => openCompare()});
   if (state.reviewState && !state.reviewState.scan_incomplete && !state.reviewState.empty) {
-    if (state.reviewState.complete) commands.push({label: 'Reopen review', run: () => toggleComplete()});
-    else if (!state.reviewState.unreviewed) commands.push({label: 'Mark review complete', run: () => toggleComplete()});
+    if (state.reviewState.complete) commands.push({label: '重新打开审核', alias: 'reopen', run: () => toggleComplete()});
+    else if (!state.reviewState.unreviewed) commands.push({label: '标记审核完成', alias: 'complete', run: () => toggleComplete()});
   }
   if (!modal.classList.contains('hidden')) {
     commands.push(
-      {label: 'Asset: Set Approved', run: () => review('approved')},
-      {label: 'Asset: Set Maybe', run: () => review('maybe')},
-      {label: 'Asset: Set Rejected', run: () => review('rejected')},
-      {label: 'Asset: Clear review state', run: () => review('')},
-      {label: 'Asset: Review history', run: () => showHistory()},
-      {label: 'Asset: Copy review link', run: () => copyReviewLink()},
+      {label: '素材：通过', alias: 'approve', keys: 'A', run: () => review('approved')},
+      {label: '素材：待定', alias: 'maybe', keys: 'M', run: () => review('maybe')},
+      {label: '素材：拒绝', alias: 'reject', keys: 'R', run: () => review('rejected')},
+      {label: '素材：清除审核状态', alias: 'clear', run: () => review('')},
+      {label: '素材：适应 / 100% 缩放', alias: 'zoom actual size', keys: 'Z', run: () => toggleActualSize()},
+      {label: '素材：审核历史', alias: 'history', run: () => showHistory()},
+      {label: '素材：复制审核链接', alias: 'copy link', run: () => copyReviewLink()},
     );
   }
   return commands;
@@ -1934,11 +2192,11 @@ function closeCommandPalette() {
 
 function renderCommandPalette() {
   const query = $('#commandSearch').value.trim().toLowerCase();
-  state.paletteMatches = paletteCommands().filter(command => !query || command.label.toLowerCase().includes(query));
+  state.paletteMatches = paletteCommands().filter(command => !query || `${command.label} ${command.alias || ''}`.toLowerCase().includes(query));
   state.paletteIndex = Math.max(0, Math.min(state.paletteIndex, Math.max(0, state.paletteMatches.length - 1)));
   $('#commandList').innerHTML = state.paletteMatches.length
-    ? state.paletteMatches.map((command, index) => `<button type="button" role="option" class="command-row${index === state.paletteIndex ? ' active' : ''}" data-command="${index}">${esc(command.label)}</button>`).join('')
-    : '<span class="command-empty">No matching commands.</span>';
+    ? state.paletteMatches.map((command, index) => `<button type="button" role="option" class="command-row${index === state.paletteIndex ? ' active' : ''}" data-command="${index}"><span>${esc(command.label)}</span>${command.keys ? `<kbd>${esc(command.keys)}</kbd>` : ''}</button>`).join('')
+    : '<span class="command-empty">没有匹配的命令。</span>';
   $('#commandList').querySelectorAll('[data-command]').forEach(button => {
     button.onclick = () => runPaletteCommand(Number(button.dataset.command));
   });
@@ -1978,7 +2236,22 @@ $('#sceneFilter').onchange = () => {
 $('#useFilter').onchange = () => { syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); };
 $('#filter').onchange = () => { syncWorkspaceFromAssetControls(); applyFilter(); updateCollectionActions(); };
 $('#sort').onchange = () => { if (state.workspaceTab === 'activity') syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); };
-$('#search').oninput = () => { if (state.workspaceTab === 'activity') syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); updateCollectionActions(); };
+let searchTimer = null;
+$('#search').oninput = () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { if (state.workspaceTab === 'activity') syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); updateCollectionActions(); }, 120);
+};
+$('#statusChips').onclick = event => {
+  const chip = event.target.closest('[data-status]');
+  if (chip) setStatusFilter(chip.dataset.status);
+};
+$('#filtersToggle').onclick = () => {
+  const open = $('#facetBar').classList.toggle('open');
+  $('#filtersToggle').setAttribute('aria-expanded', String(open));
+};
+$('#density').oninput = () => setDensity($('#density').value);
+$('#themeToggle').onclick = () => cycleTheme();
+$('#paletteHint').onclick = () => openCommandPalette();
 $('#view').onchange = () => setView($('#view').value).catch(showError);
 $('#quickReviewLaunch').onclick = () => startQuickReview();
 $('#closeQuickReview').onclick = () => closeQuickReview();
@@ -2001,10 +2274,47 @@ $('#approvedHandoff').onclick = () => exportHandoff().catch(showError);
 $('#approvedReport').onclick = () => window.open(`/report?collection=${encodeURIComponent(state.active)}&present=1&refresh=1`, '_blank', 'noopener');
 $('#actions').onchange = () => handleCollectionAction($('#actions').value).catch(showError);
 $('#selectionAction').onchange = () => handleSelectionAction($('#selectionAction').value).catch(showError);
-$('#reviewStatus').onchange = () => review($('#reviewStatus').value).catch(showError);
+$('#reviewStatus').onclick = event => {
+  const button = event.target.closest('[data-status]');
+  if (!button) return;
+  const asset = state.filtered[state.current];
+  // Pressing the active decision again clears it, matching the grid controls.
+  review((asset?.status || '') === button.dataset.status ? '' : button.dataset.status).catch(showError);
+};
 $('#assetActions').onchange = () => handleAssetAction($('#assetActions').value).catch(showError);
 $('#familyActions').onchange = () => handleFamilyAction($('#familyActions').value).catch(showError);
-$('#annotationMode').onchange = () => setAnnotationMode($('#annotationMode').value);
+$('#annotationMode').onclick = event => {
+  const button = event.target.closest('[data-mode]');
+  if (button) setAnnotationMode(button.dataset.mode);
+};
+const stageViewport = $('#stageViewport');
+stageViewport.onwheel = event => {
+  if ($('#full').classList.contains('hidden')) return;
+  event.preventDefault();
+  zoomStageAt(stageZoom.scale * (event.deltaY < 0 ? 1.15 : 0.87), event.clientX, event.clientY);
+};
+stageViewport.onpointerdown = event => {
+  if (event.button !== 0 || state.annotationMode || stageZoom.scale === 1 || event.target.closest('button,video')) return;
+  stageZoom.drag = {startX: event.clientX, startY: event.clientY, x: stageZoom.x, y: stageZoom.y};
+  stageViewport.classList.add('dragging');
+  stageViewport.setPointerCapture?.(event.pointerId);
+};
+stageViewport.onpointermove = event => {
+  const drag = stageZoom.drag;
+  if (!drag) return;
+  stageZoom.x = drag.x + event.clientX - drag.startX;
+  stageZoom.y = drag.y + event.clientY - drag.startY;
+  applyStageZoom();
+};
+stageViewport.onpointerup = stageViewport.onpointercancel = () => {
+  stageZoom.drag = null;
+  stageViewport.classList.remove('dragging');
+};
+stageViewport.ondblclick = event => {
+  if (state.annotationMode || event.target.closest('button,video') || $('#full').classList.contains('hidden')) return;
+  toggleActualSize(event);
+};
+$('#zoomLevel').onclick = () => toggleActualSize();
 $('#comment').oninput = scheduleCommentSave;
 $('#close').onclick = close;
 $('#prev').onclick = () => step(-1);
@@ -2068,20 +2378,27 @@ document.onkeydown = event => {
     else if (event.key === 'Escape') close();
     else if (event.key === 'ArrowLeft') step(-1);
     else if (event.key === 'ArrowRight') step(1);
-    else if (event.key.toLowerCase() === 'a') review('approved').catch(showError);
-    else if (event.key.toLowerCase() === 'm') review('maybe').catch(showError);
-    else if (event.key.toLowerCase() === 'r') review('rejected').catch(showError);
+    else if (event.ctrlKey || event.metaKey || event.altKey) return;
+    else if (event.key.toLowerCase() === 'a' || event.key === '1') review('approved').catch(showError);
+    else if (event.key.toLowerCase() === 'm' || event.key === '2') review('maybe').catch(showError);
+    else if (event.key.toLowerCase() === 'r' || event.key === '3') review('rejected').catch(showError);
+    else if (event.key.toLowerCase() === 'z') toggleActualSize();
+    else if (event.key === '0') resetStageZoom();
     return;
   }
   if (isQuickReviewOpen()) {
     if (editing) return;
-    if (event.repeat && (((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') || ['1', '2', '3'].includes(event.key))) {
+    if (event.repeat && (((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') || ['1', '2', '3', 'a', 'm', 'r'].includes(event.key.toLowerCase()))) {
       event.preventDefault();
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
       event.preventDefault();
       quickReviewUndo().catch(showError);
+    } else if (event.key.toLowerCase() === 'n' && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      $('#quickReviewNote').open = true;
+      $('#quickReviewComment').focus();
     } else if (event.key === 'Escape') {
       event.preventDefault();
       closeQuickReview();
@@ -2091,16 +2408,26 @@ document.onkeydown = event => {
     } else if (event.key === 'ArrowRight') {
       event.preventDefault();
       quickReviewMove(1);
-    } else if (event.key === '1') {
+    } else if (event.key === '1' || (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'a')) {
       event.preventDefault();
       quickReviewDecision('approved').catch(showError);
-    } else if (event.key === '2') {
+    } else if (event.key === '2' || event.key.toLowerCase() === 'm') {
       event.preventDefault();
       quickReviewDecision('maybe').catch(showError);
-    } else if (event.key === '3') {
+    } else if (event.key === '3' || event.key.toLowerCase() === 'r') {
       event.preventDefault();
       quickReviewDecision('rejected').catch(showError);
     }
+    return;
+  }
+  if (event.key === '/' && !editing) {
+    event.preventDefault();
+    $('#search').focus();
+    $('#search').select();
+    return;
+  }
+  if (event.key === 'Escape' && event.target === $('#search')) {
+    $('#search').blur();
     return;
   }
   if (state.selectionMode && !editing) {
@@ -2134,11 +2461,13 @@ async function pollCatalog() {
 
 function showError(error) {
   console.error(error);
-  $('#summary').textContent = error.message || 'Viewer error';
+  toast(error.message || '出现错误', {error: true});
 }
 
 (async () => {
   try {
+    applyTheme(readPref(THEME_KEY));
+    setDensity(readPref(DENSITY_KEY, '1'));
     loadSavedViews();
     renderViewMenu();
     await session();

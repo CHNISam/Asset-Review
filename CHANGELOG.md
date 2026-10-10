@@ -4,6 +4,14 @@ All notable changes to Asset Viewer will be documented here.
 
 ## Unreleased
 
+- Rebuild the browser UI as a lighter, art-first "Asset Review" studio: neutral untinted greys so artwork carries the colour, dark/light themes that follow the system with a manual toggle, and a single token-based stylesheet replacing the layered overrides.
+- Collapse gallery chrome: status chips with live counts replace the status dropdown and summary line, the project/scene/use filters become a slim secondary row (collapsible on mobile), and a thumbnail density control is remembered per viewer.
+- Quieter cards: badges only for reviewed or new assets, a single metadata line, and scene/use chips only when a view spans collections. Hovering a card shows one-click 通过/待定/拒绝 controls; a focused card also accepts A/M/R or 1/2/3.
+- Focused review moves to a stage plus inspector layout with visible decision buttons in place of a status `<select>`, wheel zoom, drag pan, double-click or `Z` for 100%, and a position counter. Deciding inside a filter such as 待审 now continues with the next asset instead of closing.
+- Unify review vocabulary (通过 / 待定 / 拒绝) across the gallery, focused review and quick review, accept both A/M/R and 1/2/3 everywhere, and localize the remaining English UI copy, including activity summaries rendered client-side while the server summary stays a stable English contract.
+- Group activity by day, add a toast for confirmations and errors (it previously overwrote the collection summary), add a searchable Chinese/English command palette with shortcut hints, `/` to focus search, and `N` to open the quick-review note.
+- Fix a duplicate `formatBytes` definition that shadowed the safe version, and update selection in place instead of re-rendering the whole grid on every click.
+
 - Add first-class local video assets (`.mp4`, `.webm`, `.mov`, `.m4v`) without copying or transcoding originals.
 - Generate bounded, cached JPEG poster frames with FFmpeg for fast video thumbnails while native browser playback streams the original file in place.
 - Keep video poster extraction single-threaded inside the existing isolated preview boundary to control memory and CPU use.

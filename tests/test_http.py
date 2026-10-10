@@ -157,7 +157,7 @@ class HttpSecurityTests(unittest.TestCase):
     def test_stable_collection_url_serves_app(self):
         status, _, body = self.request("GET", "/c/samples")
         self.assertEqual(status, 200)
-        self.assertIn(b"Asset Viewer", body)
+        self.assertIn(b"Asset Review", body)
 
     def test_svg_is_not_rendered_inline_and_thumb_is_raster(self):
         (self.images / "active.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>')

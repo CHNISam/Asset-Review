@@ -4,27 +4,29 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
-  <title>Asset Viewer</title>
+  <meta name="color-scheme" content="dark light">
+  <title>Asset Review</title>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 <div class="app-shell">
   <aside id="collectionRail" class="collection-rail">
-    <div class="rail-brand"><div class="mark" aria-hidden="true">AV</div><div><strong>Asset Viewer</strong><span>本地视觉素材工作台</span></div></div>
-    <div class="rail-section-label">项目与场景</div>
+    <div class="rail-brand"><div class="mark" aria-hidden="true"></div><div><strong>Asset Review</strong><span>本地视觉素材审阅</span></div></div>
     <nav id="collectionNav" class="collection-nav" aria-label="项目与场景"></nav>
-    <div class="rail-footer"><strong>本地优先</strong><span>原始图片与视频始终留在原目录。</span><kbd>Ctrl K</kbd><span>命令面板</span></div>
+    <div class="rail-footer">
+      <button id="paletteHint" class="rail-hint" type="button" title="打开命令面板"><span>命令面板</span><kbd>Ctrl K</kbd></button>
+      <button id="themeToggle" class="rail-hint" type="button" title="切换明暗主题"><span id="themeLabel">主题：跟随系统</span><span aria-hidden="true">◐</span></button>
+    </div>
   </aside>
 
   <section class="workspace">
     <header class="topbar">
-      <div class="mobile-brand"><div class="mark" aria-hidden="true">AV</div><strong>Asset Viewer</strong></div>
       <div class="collection-context">
         <span id="scopeLabel" class="eyebrow">本地素材工作台</span>
-        <div class="collection-title-row"><h1 id="collectionTitle">Asset Viewer</h1><select id="actions" aria-label="集合操作"><option value="">更多操作…</option></select></div>
+        <div class="collection-title-row"><h1 id="collectionTitle">Asset Review</h1><select id="actions" class="menu-select" aria-label="集合操作"><option value="">更多…</option></select></div>
         <span id="summary">正在载入…</span>
       </div>
-      <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索名称、批注、来源、项目或场景…" aria-label="搜索素材"></div>
+      <div class="search-wrap"><span aria-hidden="true" class="search-icon"></span><input id="search" type="search" placeholder="搜索名称、批注、来源…" aria-label="搜索素材"><kbd class="search-kbd">/</kbd></div>
     </header>
 
     <nav class="workspace-tabs" aria-label="素材工作区">
@@ -35,26 +37,34 @@
     </nav>
 
     <div class="toolbar">
-      <label class="mobile-collection">集合 <select id="collection" aria-label="集合"></select></label>
-      <div class="facet-bar" aria-label="素材筛选">
+      <div id="statusChips" class="status-chips" role="group" aria-label="按审核状态筛选"></div>
+      <select id="filter" class="visually-hidden" tabindex="-1" aria-hidden="true"><option value="all">全部</option><option value="new">新素材</option><option value="unreviewed">待审</option><option value="approved">已通过</option><option value="maybe">待定</option><option value="rejected">已拒绝</option></select>
+      <div class="toolbar-actions">
+        <button id="filtersToggle" class="filters-toggle" type="button" aria-expanded="false" aria-controls="facetBar">筛选</button>
+        <select id="sort" aria-label="排序素材"><option value="newest">最新优先</option><option value="oldest">最早优先</option><option value="name">名称</option><option value="status">审核状态</option><option value="size">文件大小</option><option value="resolution">分辨率</option></select>
+        <label class="density" title="缩略图大小"><span aria-hidden="true" class="density-icon"></span><input id="density" type="range" min="0" max="2" step="1" value="1" aria-label="缩略图大小"></label>
+        <button id="selectionMode" type="button" aria-pressed="false">多选</button>
+        <button id="quickReviewLaunch" class="primary" type="button" title="按当前筛选结果逐张快速审核">快速审核</button>
+      </div>
+      <div id="facetBar" class="facet-bar" aria-label="素材范围">
+        <label class="mobile-collection"><span>集合</span><select id="collection" aria-label="集合"></select></label>
         <label><span>项目</span><select id="projectFilter" aria-label="项目"></select></label>
         <label><span>场景</span><select id="sceneFilter" aria-label="场景"></select></label>
         <label><span>用途</span><select id="useFilter" aria-label="内容用途"><option value="all">全部用途</option></select></label>
-        <label><span>审核</span><select id="filter" aria-label="审核状态"><option value="all">全部状态</option><option value="new">新素材</option><option value="unreviewed">待人工审核</option><option value="approved">已通过</option><option value="maybe">待定</option><option value="rejected">已拒绝</option></select></label>
+        <label><span>视图</span><select id="view" aria-label="视图与保存的视图"><option value="gallery">素材</option><option value="activity">审核记录</option></select></label>
       </div>
-      <div class="toolbar-actions"><select id="sort" aria-label="排序素材"><option value="newest">最新优先</option><option value="oldest">最早优先</option><option value="name">名称</option><option value="status">审核状态</option><option value="size">文件大小</option><option value="resolution">分辨率</option></select><select id="view" aria-label="视图与保存的视图"><option value="gallery">视图…</option><option value="activity">审核记录</option></select><button id="quickReviewLaunch" type="button" title="按当前集合与筛选结果逐张快速审核">快速审核</button><button id="selectionMode" type="button" aria-pressed="false">多选</button></div>
     </div>
 
     <div id="bulkbar" class="bulkbar hidden"><strong id="selectedCount">0 项已选择</strong><span id="selectionScopeNote"></span><button id="selectAllVisible" type="button">全选当前结果</button><button id="clearSelection" type="button">清空</button><select id="selectionAction" aria-label="批量操作"><option value="">批量操作…</option></select></div>
 
     <main class="workspace-main">
       <div class="content-frame">
-        <section id="galleryView"><div id="empty" class="empty hidden"><strong>当前范围没有素材。</strong><span>调整筛选条件，或用 <code>asset-viewer add 路径</code> 登记已有素材目录。</span></div><div id="grid" class="grid"></div></section>
-        <section id="activityView" class="activity-view hidden"><div class="activity-heading"><div><strong>审核记录</strong><span>保留的原生集合历史</span></div><span id="activitySummary"></span></div><div id="activityList" class="activity-list"></div></section>
-        <aside id="approvedPanel" class="approved-panel hidden" aria-label="Approved asset handoff">
+        <section id="galleryView"><div id="empty" class="empty hidden"><strong>当前范围没有素材</strong><span>调整筛选条件，或用 <code>asset-viewer add 路径</code> 登记已有素材目录。</span></div><div id="grid" class="grid" data-density="1"></div></section>
+        <section id="activityView" class="activity-view hidden"><div class="activity-heading"><div><strong>审核记录</strong><span>该集合保留的完整审核历史</span></div><span id="activitySummary"></span></div><div id="activityList" class="activity-list"></div></section>
+        <aside id="approvedPanel" class="approved-panel hidden" aria-label="已通过素材交接">
           <div class="approved-ready"><span class="approved-check" aria-hidden="true">✓</span><div><strong id="approvedCount">0 项已通过素材</strong><span id="approvedSummaryText">人工通过后可准备交接清单。</span></div></div>
-          <h2>交接</h2><p>使用已有的交接清单，不移动或改写原始文件。</p>
-          <button id="approvedHandoff" class="primary-action" type="button">导出已通过交接清单</button>
+          <h2>交接</h2><p>导出交接清单，不移动或改写原始文件。</p>
+          <button id="approvedHandoff" class="primary" type="button">导出已通过交接清单</button>
           <button id="approvedReport" type="button">打开审核报告</button>
           <div id="approvedMeta" class="approved-meta"></div>
         </aside>
@@ -63,23 +73,48 @@
   </section>
 </div>
 
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
 <div id="commandPalette" class="command-palette hidden" role="dialog" aria-modal="true" aria-label="命令面板"><div class="command-box"><input id="commandSearch" type="search" autocomplete="off" placeholder="输入命令…" aria-label="搜索命令"><div id="commandList" class="command-list" role="listbox"></div><span class="command-hint">Enter 执行 · ↑/↓ 移动 · Esc 关闭</span></div></div>
 
 <section id="quickReview" class="quick-review hidden" role="dialog" aria-modal="true" aria-labelledby="quickReviewTitle">
-  <header class="quick-review-header"><div><span class="quick-review-kicker">快速审核</span><strong id="quickReviewTitle">正在准备素材…</strong><span id="quickReviewDetails" class="quick-review-details"></span></div><div class="quick-review-header-actions"><span id="quickReviewStatus" class="quick-review-status">待人工审核</span><button id="closeQuickReview" type="button" aria-label="退出快速审核">退出</button></div></header>
+  <header class="quick-review-header"><div><span class="quick-review-kicker">快速审核</span><strong id="quickReviewTitle">正在准备素材…</strong><span id="quickReviewDetails" class="quick-review-details"></span></div><div class="quick-review-header-actions"><span id="quickReviewStatus" class="status-pill">待审</span><button id="closeQuickReview" type="button" aria-label="退出快速审核">退出 <kbd>Esc</kbd></button></div></header>
   <div class="quick-review-stage"><img id="quickReviewImage" alt=""><video id="quickReviewVideo" class="hidden" controls playsinline preload="metadata"></video></div>
-  <section class="quick-review-controls" aria-label="快速审核操作"><div class="quick-review-progress"><span id="quickReviewProgress" aria-live="polite">0 / 0</span><div class="quick-review-progress-track" aria-hidden="true"><span id="quickReviewProgressBar"></span></div></div><div class="quick-review-actions"><button id="quickReviewPrevious" type="button" aria-label="上一张">← 上一张</button><button id="quickReviewApprove" class="quick-review-action approve" type="button">保留 <kbd>1</kbd></button><button id="quickReviewMaybe" class="quick-review-action maybe" type="button">待修改 <kbd>2</kbd></button><button id="quickReviewReject" class="quick-review-action reject" type="button">不采用 <kbd>3</kbd></button><button id="quickReviewNext" type="button" aria-label="跳过并查看下一张">跳过 →</button></div><div class="quick-review-secondary"><button id="quickReviewDetailsButton" type="button">批注 / 详情</button><button id="quickReviewCompare" type="button">比较上一张</button><button id="quickReviewUndo" type="button">撤销 <kbd>Ctrl Z</kbd></button></div></section>
-  <details class="quick-review-note"><summary>备注（按需展开）</summary><div><textarea id="quickReviewComment" maxlength="10000" placeholder="留下下一轮设计迭代需要知道的修改意见…" aria-label="快速审核备注"></textarea><span id="quickReviewCommentState" class="quick-review-save-state">自动保存</span></div></details>
+  <section class="quick-review-controls" aria-label="快速审核操作"><div class="quick-review-progress"><span id="quickReviewProgress" aria-live="polite">0 / 0</span><div class="quick-review-progress-track" aria-hidden="true"><span id="quickReviewProgressBar"></span></div></div><div class="quick-review-actions"><button id="quickReviewPrevious" class="ghost" type="button" aria-label="上一张">←</button><button id="quickReviewApprove" class="decision approve" type="button">通过 <kbd>1</kbd></button><button id="quickReviewMaybe" class="decision maybe" type="button">待定 <kbd>2</kbd></button><button id="quickReviewReject" class="decision reject" type="button">拒绝 <kbd>3</kbd></button><button id="quickReviewNext" class="ghost" type="button" aria-label="跳过并查看下一张">→</button></div><div class="quick-review-secondary"><button id="quickReviewDetailsButton" class="ghost" type="button">详情 / 标注</button><button id="quickReviewCompare" class="ghost" type="button">比较上一张</button><button id="quickReviewUndo" class="ghost" type="button">撤销 <kbd>Ctrl Z</kbd></button></div></section>
+  <details id="quickReviewNote" class="quick-review-note"><summary>备注 <kbd>N</kbd></summary><div><textarea id="quickReviewComment" maxlength="10000" placeholder="留下下一轮迭代需要知道的修改意见…" aria-label="快速审核备注"></textarea><span id="quickReviewCommentState" class="save-state">自动保存</span></div></details>
   <nav id="quickReviewFilmstrip" class="quick-review-filmstrip" aria-label="快速审核胶片带"></nav>
 </section>
 
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="素材审核">
-  <button class="icon-button close" id="close" type="button" aria-label="关闭">×</button><button class="icon-button nav prev" id="prev" type="button" aria-label="上一项">‹</button>
-  <section class="stage"><div id="imageSurface" class="image-surface"><img id="full" alt=""><video id="videoFull" class="hidden" controls playsinline preload="metadata"></video><div id="annotationLayer" class="annotation-layer" aria-label="空间批注"></div></div><div class="meta"><div class="identity"><strong id="filename"></strong><span id="details"></span><span id="previewNotice" class="preview-notice hidden"></span></div><div class="review smart-controls"><span id="reviewDecision" class="review-decision">待人工审核</span><label>审核状态 <select id="reviewStatus" aria-label="审核状态"><option value="">待人工审核</option><option value="approved">已通过</option><option value="maybe">待定</option><option value="rejected">已拒绝</option></select></label><select id="assetActions" aria-label="素材操作"><option value="">更多操作…</option></select></div></div>
-    <div id="familyRow" class="family-row hidden"><div><strong id="familyName"></strong><span id="familyMeta"></span></div><select id="familyActions" aria-label="版本组操作"><option value="">版本组…</option></select></div><div class="comment-row"><textarea id="comment" maxlength="10000" placeholder="留下给下一轮人工审核或设计迭代的意见…" aria-label="审核意见"></textarea><span id="commentState" class="save-state">自动保存</span></div><details id="detailsPanel" class="details-panel"><summary>详情与来源</summary><div id="provenanceContent" class="provenance-content"></div></details><div class="annotation-toolbar"><select id="annotationMode" aria-label="批注模式"><option value="">标注…</option><option value="point">点</option><option value="region">区域</option></select><input id="annotationText" maxlength="4000" placeholder="精确意见，例如“将此标志左移”…" aria-label="标注意见"><span id="annotationHelp">需要精确意见时，选择点或区域。</span></div><div id="annotationPanel" class="annotation-panel hidden"></div><div id="historyPanel" class="history-panel hidden"></div>
-  </section><button class="icon-button nav next" id="next" type="button" aria-label="下一项">›</button>
+  <section class="stage">
+    <div class="stage-bar"><span id="stagePosition" class="stage-position"></span><span id="zoomLevel" class="zoom-level" title="滚轮缩放 · 拖动平移 · 双击切换 100%">适应</span><button class="icon-button close" id="close" type="button" aria-label="关闭">×</button></div>
+    <div id="stageViewport" class="stage-viewport">
+      <button class="icon-button nav prev" id="prev" type="button" aria-label="上一项">‹</button>
+      <div id="imageSurface" class="image-surface"><img id="full" alt="" draggable="false"><video id="videoFull" class="hidden" controls playsinline preload="metadata"></video><div id="annotationLayer" class="annotation-layer" aria-label="空间批注"></div></div>
+      <button class="icon-button nav next" id="next" type="button" aria-label="下一项">›</button>
+    </div>
+  </section>
+  <aside class="inspector">
+    <div class="identity"><strong id="filename"></strong><span id="details"></span><span id="previewNotice" class="preview-notice hidden"></span></div>
+    <div id="reviewStatus" class="decision-group" role="radiogroup" aria-label="审核状态">
+      <button type="button" class="decision approve" data-status="approved" role="radio" aria-checked="false">通过 <kbd>A</kbd></button>
+      <button type="button" class="decision maybe" data-status="maybe" role="radio" aria-checked="false">待定 <kbd>M</kbd></button>
+      <button type="button" class="decision reject" data-status="rejected" role="radio" aria-checked="false">拒绝 <kbd>R</kbd></button>
+    </div>
+    <div class="inspector-row"><span id="reviewDecision" class="status-pill">待审</span><select id="assetActions" class="menu-select" aria-label="素材操作"><option value="">更多…</option></select></div>
+    <div id="familyRow" class="family-row hidden"><div><strong id="familyName"></strong><span id="familyMeta"></span></div><select id="familyActions" class="menu-select" aria-label="版本组操作"><option value="">版本组…</option></select></div>
+    <div class="field"><label for="comment">审核意见</label><textarea id="comment" maxlength="10000" placeholder="留给下一轮设计迭代的意见…"></textarea><span id="commentState" class="save-state">自动保存</span></div>
+    <div class="field annotation-field">
+      <label>精确标注</label>
+      <div class="annotation-toolbar"><div id="annotationMode" class="segmented" role="group" aria-label="批注模式"><button type="button" data-mode="point" aria-pressed="false">点</button><button type="button" data-mode="region" aria-pressed="false">区域</button></div><input id="annotationText" maxlength="4000" placeholder="先写意见，再在图上点选或框选" aria-label="标注意见"></div>
+      <span id="annotationHelp" class="hint">需要指向具体位置时，选择“点”或“区域”。</span>
+      <div id="annotationPanel" class="annotation-panel hidden"></div>
+    </div>
+    <details id="detailsPanel" class="details-panel"><summary>详情与来源</summary><div id="provenanceContent" class="provenance-content"></div></details>
+    <div id="historyPanel" class="history-panel hidden"></div>
+  </aside>
 </div>
 
-<div id="compareModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="比较选中素材"><button class="icon-button close" id="closeCompare" type="button" aria-label="关闭比较">×</button><section class="compare-stage"><div class="compare-heading"><div><strong>比较方案</strong><span id="compareHint">并排比较最多支持四项素材。</span></div><div class="compare-controls"><select id="compareMode" aria-label="比较模式"><option value="side">并排</option><option value="overlay">叠加</option><option value="difference">差异</option></select><select id="compareLink" aria-label="缩放行为"><option value="linked">联动缩放</option><option value="independent">独立缩放</option></select><select id="compareActions" aria-label="比较操作"><option value="">更多操作…</option><option value="reset">重置视图</option></select><label id="overlayControl" class="overlay-control hidden">混合 <input id="overlayRange" type="range" min="0" max="100" value="50"></label></div></div><div id="compareGrid" class="compare-grid"></div></section></div>
+<div id="compareModal" class="modal compare-modal hidden" role="dialog" aria-modal="true" aria-label="比较选中素材"><section class="compare-stage"><div class="compare-heading"><div><strong>比较方案</strong><span id="compareHint">最多并排比较四项素材。</span></div><div class="compare-controls"><select id="compareMode" aria-label="比较模式"><option value="side">并排</option><option value="overlay">叠加</option><option value="difference">差异</option></select><select id="compareLink" aria-label="缩放行为"><option value="linked">联动缩放</option><option value="independent">独立缩放</option></select><select id="compareActions" class="menu-select" aria-label="比较操作"><option value="">更多…</option><option value="reset">重置视图</option></select><label id="overlayControl" class="overlay-control hidden">混合 <input id="overlayRange" type="range" min="0" max="100" value="50"></label><button class="icon-button" id="closeCompare" type="button" aria-label="关闭比较">×</button></div></div><div id="compareGrid" class="compare-grid"></div></section></div>
 <script src="/app.js"></script>
 </body></html>

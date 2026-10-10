@@ -160,7 +160,7 @@ def main() -> None:
                         f"{exc}; summary={summary!r}; page_errors={page_errors!r}; console_errors={console_errors!r}"
                     ) from exc
 
-                assert page.title() == "Asset Viewer" or page.title().endswith("· Asset Viewer")
+                assert page.title() == "Asset Review" or page.title().endswith("· Asset Review")
                 assert page.locator("#collection").input_value() == demo_slug
                 assert "Northline Coffee" in page.locator("#collectionTitle").inner_text()
                 assert page.locator("#collectionRail").is_visible()
@@ -254,12 +254,12 @@ def main() -> None:
                     and response.request.method == "POST",
                     timeout=15_000,
                 ) as review_response_info:
-                    page.locator("#reviewStatus").select_option("approved")
+                    page.locator('#reviewStatus [data-status="approved"]').click()
                 review_response = review_response_info.value
                 assert review_response.ok, f"review mutation returned HTTP {review_response.status}"
                 wait_until(
-                    "approved status selector",
-                    lambda: page.locator("#reviewStatus").input_value() == "approved",
+                    "approved decision button",
+                    lambda: page.locator("#reviewStatus").get_attribute("data-value") == "approved",
                 )
 
                 reviews = get_json(f"{base_url}/api/reviews?collection={demo_slug}&present=1")
@@ -312,6 +312,7 @@ def main() -> None:
                     and response.request.method == "POST",
                     timeout=15_000,
                 ) as quick_comment:
+                    page.keyboard.press("n")
                     page.locator("#quickReviewComment").fill("Increase contrast before the next pass.")
                 assert quick_comment.value.ok
                 page.locator("#quickReviewCompare").click()
