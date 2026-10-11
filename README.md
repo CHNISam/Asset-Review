@@ -41,9 +41,20 @@ Material without a declared use shows as **未标注**; it is never guessed. Reg
 
 For a project-owned reusable declaration, commit a relative `.asset-viewer.toml` and run `asset-viewer project-sync`; see [Project-native registration and metadata](#project-native-registration-and-metadata).
 
-### Fast human review
+### Review
 
-The **快审** button opens a focused culling view for the current collection or filter result. Design material comes first and archive material is skipped. Decide with **通过 / 待定 / 拒绝** or `1` / `2` / `3` (adjacent keys, one hand); use arrows to move, `N` for a note, and `Ctrl+Z` to safely undo the most recent quick-review decision. The same `1` / `2` / `3` work on a hovered or focused grid card and in the detail view, where `0` clears the decision and `Z` toggles 100%. Notes, spatial annotations, comparison, source details, history, and version families continue to use the native review surface on demand.
+There is one review surface. **审核** opens it at the first pending item in the current filter (design first, archive skipped); clicking any image opens the same view.
+
+| Key | Action |
+|---|---|
+| `1` | 通过: saves and jumps to the next pending item |
+| `2` | 拒绝: saves and jumps to the next pending item |
+| `3` | 修改: needs changes; stays and focuses 意见. `Ctrl+Enter` saves and moves on |
+| `0` | Clear the decision |
+| `Ctrl+Z` | Undo the last decision |
+| `N` / `Z` / `←` `→` | Write 意见 / toggle 100% / previous, next |
+
+The same `1` / `2` / `3` work on a hovered or focused grid card. Items marked 修改 form the to-do list for the next iteration, with their 意见 attached.
 
 ## Human and agent boundary
 

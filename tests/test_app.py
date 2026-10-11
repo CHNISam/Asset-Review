@@ -106,40 +106,28 @@ class AppTests(unittest.TestCase):
         self.assertIn(".facet-bar", css)
         self.assertIn(".selection-mode", css)
 
-    def test_quick_review_reuses_native_decisions_without_a_second_workflow(self):
+    def test_review_happens_in_one_surface(self):
         root = Path(__file__).parents[1] / "asset_viewer" / "static"
         html = (root / "index.html").read_text(encoding="utf-8")
         script = (root / "app.js").read_text(encoding="utf-8")
         css = (root / "app.css").read_text(encoding="utf-8")
-        for control_id in (
-            "quickReviewLaunch",
-            "quickReview",
-            "quickReviewFilmstrip",
-            "quickReviewProgress",
-            "quickReviewApprove",
-            "quickReviewMaybe",
-            "quickReviewReject",
-            "quickReviewComment",
-            "quickReviewCompare",
-            "closeQuickReview",
-        ):
+        for control_id in ("startReview", "filmstrip", "reviewStatus", "comment", "modal"):
             self.assertIn(f'id="{control_id}"', html)
-        self.assertIn("function startQuickReview()", script)
-        self.assertIn("function quickReviewCandidateAssets()", script)
-        self.assertIn("async function quickReviewDecision(status)", script)
-        self.assertIn("async function quickReviewUndo()", script)
+        # The former standalone quick-review mode is gone: one review surface.
+        self.assertNotIn('id="quickReview"', html)
+        self.assertNotIn("quickReview", script)
+        self.assertIn("function startReview()", script)
+        self.assertIn("function reviewCandidates()", script)
+        self.assertIn("function nextPendingIndex(", script)
+        self.assertIn("async function undoLastReview()", script)
         self.assertIn("apiPost('/api/review'", script)
         self.assertIn("apiPost('/api/undo'", script)
-        self.assertIn("quickReviewSaveRequest", script)
-        self.assertIn("event.key === '1'", script)
-        self.assertIn("event.key === '2'", script)
-        self.assertIn("event.key === '3'", script)
+        for key in ("'1'", "'2'", "'3'", "'0'"):
+            self.assertIn(f"event.key === {key}", script)
         self.assertIn("event.key === 'ArrowLeft'", script)
         self.assertIn("event.key === 'ArrowRight'", script)
         self.assertIn("event.key.toLowerCase() === 'z'", script)
-        self.assertIn("quickReviewSessionIsCurrent", script)
-        self.assertIn("/api/review-history?", script)
-        self.assertIn(".quick-review", css)
+        self.assertIn(".filmstrip", css)
 
     def test_project_taxonomy_comes_from_registered_group_metadata(self):
         script = (Path(__file__).parents[1] / "asset_viewer" / "static" / "app.js").read_text(encoding="utf-8")

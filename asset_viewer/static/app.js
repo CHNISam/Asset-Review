@@ -33,12 +33,8 @@ let state = {
   selectionMode: false,
   selectionAnchor: null,
   selectionAnchorKey: '',
-  // Ephemeral presentation state only: quick review still reads and writes
-  // the same in-memory gallery rows and the native review endpoints.
-  quickReview: {open: false, keys: [], index: 0, scopeRequest: 0, runId: 0, saving: false, lastAction: null, commentTimer: null, commentPromise: null},
-  quickReviewRun: 0,
-  quickReviewSaveRequest: 0,
-  quickReviewCommentRequest: 0,
+  lastReview: null,
+  filterGen: 0,
 };
 
 const $ = selector => document.querySelector(selector);
@@ -74,17 +70,18 @@ function toast(message, {error = false} = {}) {
   toastTimer = setTimeout(() => element.classList.remove('show'), error ? 5200 : 2200);
 }
 
-const THEME_LABELS = {'': '主题：自动', dark: '主题：深色', light: '主题：浅色'};
+const THEME_LABELS = {light: '主题：浅色', dark: '主题：深色', auto: '主题：跟随系统'};
+// Light is the default; dark and follow-system are opt-in per viewer.
 function applyTheme(theme) {
-  if (theme) document.documentElement.dataset.theme = theme;
-  else delete document.documentElement.dataset.theme;
-  $('#themeLabel').textContent = THEME_LABELS[theme || ''];
-  $('#themeToggle').title = THEME_LABELS[theme || ''];
+  const value = THEME_LABELS[theme] ? theme : 'light';
+  document.documentElement.dataset.theme = value;
+  $('#themeLabel').textContent = THEME_LABELS[value];
+  $('#themeToggle').title = THEME_LABELS[value];
 }
 
 function cycleTheme() {
-  const order = ['', 'dark', 'light'];
-  const next = order[(order.indexOf(document.documentElement.dataset.theme || '') + 1) % order.length];
+  const order = ['light', 'dark', 'auto'];
+  const next = order[(order.indexOf(document.documentElement.dataset.theme) + 1) % order.length];
   writePref(THEME_KEY, next);
   applyTheme(next);
   toast(THEME_LABELS[next]);
@@ -327,7 +324,6 @@ function applyGalleryScope(payloads, scope) {
 }
 
 async function load(requested, force = false) {
-  if (isQuickReviewOpen()) closeQuickReview({refresh: false});
   const requestedAsset = assetFromLocation();
   const desired = requested || state.active || collectionFromLocation();
   const request = ++state.scopeRequest;
@@ -344,7 +340,6 @@ async function load(requested, force = false) {
 }
 
 async function loadScope(slugs, scope, force = false) {
-  if (isQuickReviewOpen()) closeQuickReview({refresh: false});
   const unique = [...new Set(slugs)].filter(Boolean);
   if (!unique.length) return;
   const request = ++state.scopeRequest;
@@ -373,7 +368,7 @@ function statusCounts() {
   }, {approved: 0, maybe: 0, rejected: 0, unreviewed: 0});
 }
 
-const STATUS_LABELS = {approved: '通过', maybe: '待定', rejected: '拒绝', '': '待审'};
+const STATUS_LABELS = {approved: '通过', maybe: '修改', rejected: '拒绝', '': '待审'};
 
 function statusDisplay(status) {
   return STATUS_LABELS[status || ''] || status;
@@ -381,14 +376,14 @@ function statusDisplay(status) {
 
 function renderStatusChips(counts) {
   const current = $('#filter').value;
-  const newCount = state.images.filter(asset => asset.is_new).length;
   const chips = [
     ['all', '全部', state.images.length],
     ['unreviewed', '待审', counts.unreviewed],
     ['approved', '通过', counts.approved],
-    ['maybe', '待定', counts.maybe],
     ['rejected', '拒绝', counts.rejected],
-    ...(newCount || current === 'new' ? [['new', '新', newCount]] : []),
+    ['maybe', '修改', counts.maybe],
+    // Legacy saved views may still filter on unseen assets.
+    ...(current === 'new' ? [['new', '未看过', state.images.filter(asset => asset.is_new).length]] : []),
   ];
   $('#statusChips').innerHTML = chips.map(([value, label, count]) =>
     `<button type="button" class="status-chip${current === value ? ' active' : ''}" data-status="${value}" aria-pressed="${current === value}">${value === 'all' ? '' : '<i aria-hidden="true"></i>'}${label}<b>${count}</b></button>`
@@ -548,14 +543,33 @@ function projectMeta(project) {
   return `${collections.length} 个集合${pending ? ` · ${pending} 待审` : ''}`;
 }
 
-function collectionRow(collection, label) {
+const EXPANDED_KEY = 'asset-viewer.expanded-topics';
+
+function expandedTopics() {
+  try { return new Set(JSON.parse(readPref(EXPANDED_KEY, '[]'))); } catch { return new Set(); }
+}
+
+// Sibling labels often repeat their topic ("Piano photo mode…", "Piano
+// runtime…"). Drop a leading word every sibling shares so names fit.
+function siblingLabels(collections) {
+  const words = collections.map(collection => collection.label.split(/\s+/));
+  const first = words[0]?.[0]?.toLowerCase();
+  const shared = first && words.length > 1 && words.every(parts => parts.length > 1 && parts[0].toLowerCase() === first);
+  return collections.map((collection, index) => {
+    if (!shared) return collection.label;
+    const rest = words[index].slice(1).join(' ');
+    return rest.charAt(0).toUpperCase() + rest.slice(1);
+  });
+}
+
+function collectionRow(collection, label, child = false) {
   const taxonomy = collectionTaxonomy(collection);
   const info = state.pending[collection.slug];
   const active = state.scope.kind === 'collection' && collection.slug === state.active;
   const archived = taxonomy.use === 'archive';
-  const tag = taxonomy.use === 'uncategorized' ? '' : useLabel(taxonomy.use);
-  const title = [collection.label, USE_QUESTIONS[taxonomy.use], info ? `共 ${info.total} 项` : ''].filter(Boolean).join(' · ');
-  return `<button type="button" class="nav-item collection-link${active ? ' active' : ''}${archived ? ' archived' : ''}" data-collection="${esc(collection.slug)}" title="${esc(title)}"${collection.available === false ? ' disabled' : ''}><span class="nav-use use-${esc(taxonomy.use)}">${esc(tag)}</span><span class="nav-label">${esc(label)}</span>${collection.available === false ? '<span class="nav-count">不可用</span>' : (archived ? '' : countBadge(Number(info?.unreviewed || 0)))}</button>`;
+  const title = [collection.label, `${useLabel(taxonomy.use)} · ${USE_QUESTIONS[taxonomy.use]}`, info ? `共 ${info.total} 项` : ''].filter(Boolean).join('\n');
+  const lead = child ? '' : '<span class="nav-disclosure placeholder" aria-hidden="true"></span>';
+  return `<button type="button" class="nav-item collection-link${child ? ' child' : ''}${active ? ' active' : ''}${archived ? ' archived' : ''}" data-collection="${esc(collection.slug)}" title="${esc(title)}"${collection.available === false ? ' disabled' : ''}>${lead}<span class="nav-label">${esc(label)}</span>${collection.available === false ? '<span class="nav-count">不可用</span>' : (archived ? '<span class="nav-count" aria-label="存档">—</span>' : countBadge(Number(info?.unreviewed || 0)))}</button>`;
 }
 
 function renderProjectBody(project) {
@@ -568,28 +582,33 @@ function renderProjectBody(project) {
     topics.get(taxonomy.topic).push(collection);
   }
   const collapsed = collapsedSections();
-  const activeScene = collectionTaxonomy(state.active).scene;
-  const parts = [`<button type="button" class="nav-item${state.scope.kind === 'project' ? ' active' : ''}" data-project="${esc(project)}"><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">全部</span>${countBadge(pendingCount(scopedCollections(project)))}</button>`];
+  const expanded = expandedTopics();
+  const activeTaxonomy = collectionTaxonomy(state.active);
+  const parts = [`<button type="button" class="nav-item nav-all${state.scope.kind === 'project' ? ' active' : ''}" data-project="${esc(project)}"><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">全部</span>${countBadge(pendingCount(scopedCollections(project)))}</button>`];
   const sceneEntries = [...scenes].sort(([a], [b]) => sortZh(a, b));
   // A lone placeholder scene adds a level without adding information.
   const flat = sceneEntries.length === 1 && sceneEntries[0][0] === '未分类';
   for (const [scene, topics] of sceneEntries) {
     const key = `${project}/${scene}`;
-    const isCollapsed = collapsed.has(key) && !(state.scope.kind === 'collection' && scene === activeScene);
+    const inside = state.scope.kind === 'collection' && activeTaxonomy.scene === scene;
+    const isCollapsed = collapsed.has(key) && !inside;
     const body = [...topics].sort(([a], [b]) => sortZh(a, b)).map(([topic, collections]) => {
       collections.sort((a, b) => sortZh(a.label, b.label));
       // One collection under a topic reads best as the topic itself.
       if (collections.length === 1) return collectionRow(collections[0], topic);
+      const topicKey = `${key}/${topic}`;
       const topicActive = state.scope.kind === 'topic' && state.scope.scene === scene && state.scope.topic === topic;
-      return `<div class="nav-group"><button type="button" class="nav-item topic-link${topicActive ? ' active' : ''}" data-project="${esc(project)}" data-scene="${esc(scene)}" data-topic="${esc(topic)}"><span class="nav-use"></span><span class="nav-label">${esc(topic)}</span>${countBadge(pendingCount(collections))}</button><div class="nav-children">${collections.map(collection => collectionRow(collection, collection.label)).join('')}</div></div>`;
+      const containsActive = state.scope.kind === 'collection' && collections.some(collection => collection.slug === state.active);
+      const open = expanded.has(topicKey) || containsActive || topicActive;
+      const labels = siblingLabels(collections);
+      return `<div class="nav-group${open ? ' open' : ''}"><div class="nav-item topic-row${topicActive ? ' active' : ''}"><button type="button" class="nav-disclosure" data-toggle-topic="${esc(topicKey)}" aria-expanded="${open}" aria-label="${open ? '收起' : '展开'} ${esc(topic)}"></button><button type="button" class="topic-link" data-project="${esc(project)}" data-scene="${esc(scene)}" data-topic="${esc(topic)}" title="${esc(`${topic} · ${collections.length} 个集合`)}"><span class="nav-label">${esc(topic)}</span>${open ? '' : countBadge(pendingCount(collections))}</button></div><div class="nav-children">${collections.map((collection, index) => collectionRow(collection, labels[index], true)).join('')}</div></div>`;
     }).join('');
     if (flat) {
       parts.push(`<div class="nav-section flat"><div class="nav-section-body">${body}</div></div>`);
       continue;
     }
     const sceneActive = state.scope.kind === 'scene' && state.scope.scene === scene;
-    const sceneCollections = [...topics.values()].flat();
-    parts.push(`<section class="nav-section${isCollapsed ? ' collapsed' : ''}"><div class="nav-section-head"><button type="button" class="nav-toggle" data-toggle-section="${esc(key)}" aria-expanded="${!isCollapsed}" aria-label="${isCollapsed ? '展开' : '收起'} ${esc(scene)}"></button><button type="button" class="nav-section-title${sceneActive ? ' active' : ''}" data-project="${esc(project)}" data-scene="${esc(scene)}">${esc(scene)}</button>${countBadge(pendingCount(sceneCollections))}</div><div class="nav-section-body">${body}</div></section>`);
+    parts.push(`<section class="nav-section${isCollapsed ? ' collapsed' : ''}"><div class="nav-section-head"><button type="button" class="nav-section-title${sceneActive ? ' active' : ''}" data-project="${esc(project)}" data-scene="${esc(scene)}">${esc(scene)}</button><button type="button" class="nav-toggle" data-toggle-section="${esc(key)}" aria-expanded="${!isCollapsed}">${isCollapsed ? '显示' : '隐藏'}</button></div><div class="nav-section-body">${body}</div></section>`);
   }
   return parts.join('');
 }
@@ -623,6 +642,19 @@ function renderRail() {
       writePref(COLLAPSED_KEY, JSON.stringify([...collapsed]));
       button.closest('.nav-section').classList.toggle('collapsed', collapsed.has(key));
       button.setAttribute('aria-expanded', String(!collapsed.has(key)));
+      button.textContent = collapsed.has(key) ? '显示' : '隐藏';
+    };
+  });
+  nav.querySelectorAll('[data-toggle-topic]').forEach(button => {
+    button.onclick = () => {
+      const expanded = expandedTopics();
+      const key = button.dataset.toggleTopic;
+      const group = button.closest('.nav-group');
+      const open = !group.classList.contains('open');
+      open ? expanded.add(key) : expanded.delete(key);
+      writePref(EXPANDED_KEY, JSON.stringify([...expanded]));
+      group.classList.toggle('open', open);
+      button.setAttribute('aria-expanded', String(open));
     };
   });
 }
@@ -722,21 +754,9 @@ function assetSearchMatch(asset, query) {
   });
 }
 
-function isQuickReviewOpen() {
-  const panel = $('#quickReview');
-  return Boolean(state.quickReview.open && panel && !panel.classList.contains('hidden'));
-}
-
-function quickReviewAssetAt(index = state.quickReview.index) {
-  const key = state.quickReview.keys[index];
-  return key ? state.images.find(asset => keyFor(asset) === key) || null : null;
-}
-
-function quickReviewAssets() {
-  return state.quickReview.keys.map(key => state.images.find(asset => keyFor(asset) === key)).filter(Boolean);
-}
-
-function quickReviewCandidateAssets() {
+// Review happens in one place: the detail view. "审核" opens it at the first
+// pending candidate; 1/2 decide and move on, 3 stays for a comment.
+function reviewCandidates() {
   const visible = state.filtered.filter(asset => asset.present !== false);
   const reviewable = visible.filter(asset => !isArchive(asset));
   const pool = reviewable.length ? reviewable : visible;
@@ -747,327 +767,47 @@ function quickReviewCandidateAssets() {
   return [...candidates.filter(asset => !asset.status), ...candidates.filter(asset => asset.status)];
 }
 
-function updateQuickReviewLaunch() {
-  const button = $('#quickReviewLaunch');
+function updateReviewLaunch() {
+  const button = $('#startReview');
   if (!button) return;
-  const candidates = quickReviewCandidateAssets();
-  const designs = candidates.filter(asset => assetTaxonomy(asset).use === 'design');
-  button.disabled = state.workspaceTab !== 'gallery' || candidates.length === 0;
-  button.textContent = '快审';
-  button.title = `${candidates.filter(asset => !asset.status).length} 项待审${designs.length ? '，设计优先' : ''}`;
+  const candidates = reviewCandidates();
+  const pending = candidates.filter(asset => !asset.status).length;
+  button.disabled = state.workspaceTab === 'activity' || candidates.length === 0;
+  button.title = pending ? `从 ${pending} 项待审开始${candidates.some(asset => assetTaxonomy(asset).use === 'design') ? '，设计优先' : ''}` : '当前范围已审完';
 }
 
-function clearQuickReviewCommentTimer() {
-  if (state.quickReview.commentTimer) clearTimeout(state.quickReview.commentTimer);
-  state.quickReview.commentTimer = null;
-}
-
-function resetQuickReview() {
-  clearQuickReviewCommentTimer();
-  state.quickReviewRun += 1;
-  state.quickReviewSaveRequest += 1;
-  state.quickReviewCommentRequest += 1;
-  state.quickReview.open = false;
-  state.quickReview.runId = 0;
-  state.quickReview.keys = [];
-  state.quickReview.index = 0;
-  state.quickReview.saving = false;
-  state.quickReview.lastAction = null;
-  state.quickReview.commentPromise = null;
-  const panel = $('#quickReview');
-  panel?.classList.add('hidden');
-  panel?.classList.remove('suspended');
-  panel?.setAttribute('aria-hidden', 'true');
-  const video = $('#quickReviewVideo');
-  if (video) {
-    video.pause();
-    video.removeAttribute('src');
-    video.removeAttribute('poster');
-    video.load();
-  }
-}
-
-function closeQuickReview({refresh = true} = {}) {
-  if (!state.quickReview.open) return;
-  resetQuickReview();
-  if (refresh) applyFilter();
-  if (modal.classList.contains('hidden') && compareModal.classList.contains('hidden')) document.body.style.overflow = '';
-}
-
-function startQuickReview() {
-  const candidates = quickReviewCandidateAssets();
+function startReview() {
+  const candidates = reviewCandidates();
   if (!candidates.length) return;
-  if (state.selectionMode) setSelectionMode(false, false);
-  const quick = state.quickReview;
-  quick.open = true;
-  quick.keys = candidates.map(keyFor);
-  quick.index = 0;
-  quick.scopeRequest = state.scopeRequest;
-  quick.runId = ++state.quickReviewRun;
-  quick.saving = false;
-  quick.lastAction = null;
-  const panel = $('#quickReview');
-  panel.classList.remove('hidden');
-  panel.classList.remove('suspended');
-  panel.setAttribute('aria-hidden', 'false');
-  document.body.style.overflow = 'hidden';
-  renderQuickReview();
-  requestAnimationFrame(() => $('#quickReviewApprove')?.focus());
+  if (state.selectionMode) setSelectionMode(false);
+  const first = candidates.find(asset => !asset.status) || candidates[0];
+  openAt(state.filtered.findIndex(asset => keyFor(asset) === keyFor(first)));
 }
 
-function quickReviewMove(amount, force = false) {
-  const quick = state.quickReview;
-  if (!quick.open || (quick.saving && !force)) return;
-  quick.index = Math.max(0, Math.min(quick.keys.length - 1, quick.index + amount));
-  renderQuickReview();
-}
-
-function updateQuickReviewAsset(assetKey, patch) {
-  const asset = state.images.find(candidate => keyFor(candidate) === assetKey);
-  if (asset) Object.assign(asset, patch);
-  return asset;
-}
-
-function quickReviewSessionIsCurrent(runId, assetKey = '') {
-  return isQuickReviewOpen()
-    && state.quickReview.runId === runId
-    && state.quickReview.scopeRequest === state.scopeRequest
-    && (!assetKey || keyFor(quickReviewAssetAt()) === assetKey);
-}
-
-function quickReviewRequestIsCurrent(request, assetKey, runId) {
-  return isQuickReviewOpen()
-    && request === state.quickReviewSaveRequest
-    && quickReviewSessionIsCurrent(runId, assetKey);
-}
-
-function setQuickReviewMedia(asset) {
-  const image = $('#quickReviewImage');
-  const video = $('#quickReviewVideo');
-  const isVideo = asset.media_type === 'video';
-  image.classList.toggle('hidden', isVideo);
-  video.classList.toggle('hidden', !isVideo);
-  if (isVideo) {
-    image.removeAttribute('src');
-    image.alt = '';
-    video.poster = asset.preview || asset.thumb;
-    if (video.getAttribute('src') !== asset.file) {
-      video.src = asset.file;
-      video.load();
-    }
-    video.setAttribute('aria-label', asset.name);
-  } else {
-    video.pause();
-    video.removeAttribute('src');
-    video.removeAttribute('poster');
-    image.src = assetSrc(asset);
-    image.alt = asset.name;
+// Next pending asset after `from` in the current filter, wrapping around.
+function nextPendingIndex(from) {
+  const total = state.filtered.length;
+  for (let offset = 1; offset <= total; offset += 1) {
+    const index = (((from + offset) % total) + total) % total;
+    const asset = state.filtered[index];
+    if (asset && !asset.status && !isArchive(asset) && asset.present !== false) return index;
   }
+  return -1;
 }
 
-function renderQuickReview() {
-  if (!isQuickReviewOpen()) return;
-  const quick = state.quickReview;
-  const assets = quickReviewAssets();
-  if (assets.length !== quick.keys.length) quick.keys = assets.map(keyFor);
-  if (!assets.length) {
-    closeQuickReview();
-    return;
-  }
-  quick.index = Math.max(0, Math.min(quick.index, assets.length - 1));
-  const asset = assets[quick.index];
-  setQuickReviewMedia(asset);
-  $('#quickReviewTitle').textContent = asset.name;
-  $('#quickReviewKicker').textContent = useQuestion(asset);
-  const resolution = asset.width && asset.height ? `${asset.width} × ${asset.height}` : assetTypeLabel(asset);
-  $('#quickReviewDetails').textContent = [asset.rel, resolution, formatBytes(asset.size)].filter(Boolean).join(' · ');
-  const status = asset.status || '';
-  const statusElement = $('#quickReviewStatus');
-  statusElement.textContent = statusDisplay(status);
-  statusElement.className = `status-pill ${status ? `status-${status}` : 'status-unreviewed'}`;
-  const reviewed = assets.filter(candidate => candidate.status).length;
-  $('#quickReviewProgress').textContent = `${quick.index + 1} / ${assets.length} · 已审 ${reviewed}`;
-  $('#quickReviewProgressBar').style.width = `${((quick.index + 1) / assets.length) * 100}%`;
-  const controlsDisabled = quick.saving;
-  $('#quickReviewPrevious').disabled = controlsDisabled || quick.index === 0;
-  $('#quickReviewNext').disabled = controlsDisabled || quick.index >= assets.length - 1;
-  $('#quickReviewApprove').disabled = controlsDisabled;
-  $('#quickReviewMaybe').disabled = controlsDisabled;
-  $('#quickReviewReject').disabled = controlsDisabled;
-  $('#quickReviewUndo').disabled = controlsDisabled || !quick.lastAction;
-  $('#quickReviewCompare').disabled = controlsDisabled || quick.index === 0;
-  for (const [buttonId, buttonStatus] of [['quickReviewApprove', 'approved'], ['quickReviewMaybe', 'maybe'], ['quickReviewReject', 'rejected']]) {
-    const button = $(`#${buttonId}`);
-    button.classList.toggle('decision-active', status === buttonStatus);
-    button.setAttribute('aria-pressed', String(status === buttonStatus));
-  }
-  const comment = $('#quickReviewComment');
-  if (document.activeElement !== comment) comment.value = asset.comment || '';
-  if (asset.comment) $('#quickReviewNote').open = true;
-  const strip = $('#quickReviewFilmstrip');
-  strip.innerHTML = assets.map((candidate, index) => `<button type="button" class="quick-review-frame${index === quick.index ? ' active' : ''}${candidate.status ? ` ${esc(candidate.status)}` : ''}" data-quick-index="${index}" aria-current="${index === quick.index ? 'true' : 'false'}" aria-label="${esc(`${index + 1}. ${candidate.name} · ${statusDisplay(candidate.status)}`)}"><img src="${esc(candidate.thumb)}" alt=""><span>${candidate.media_type === 'video' ? '▶' : index + 1}</span></button>`).join('');
-  strip.querySelectorAll('[data-quick-index]').forEach(button => {
-    button.onclick = () => {
-      if (state.quickReview.saving) return;
-      state.quickReview.index = Number(button.dataset.quickIndex);
-      renderQuickReview();
-    };
-  });
-  requestAnimationFrame(() => strip.querySelector('.quick-review-frame.active')?.scrollIntoView({block: 'nearest', inline: 'center'}));
+function renderFilmstrip() {
+  const strip = $('#filmstrip');
+  strip.innerHTML = state.filtered.map((asset, index) => `<button type="button" class="film-frame${asset.status ? ` ${esc(asset.status)}` : ''}" data-film="${index}" aria-label="${esc(`${index + 1}. ${asset.name} · ${statusDisplay(asset.status)}`)}"><img loading="lazy" src="${esc(asset.thumb)}" alt="">${asset.media_type === 'video' ? '<span>▶</span>' : ''}</button>`).join('');
+  strip.dataset.gen = String(state.filterGen);
 }
 
-function enqueueQuickReviewCommentSave(assetKey, collection, assetId, comment, runId) {
-  const quick = state.quickReview;
-  const previous = quick.commentPromise || Promise.resolve();
-  const promise = previous.catch(() => null).then(() =>
-    saveQuickReviewCommentSnapshot(assetKey, collection, assetId, comment, runId)
-  );
-  quick.commentPromise = promise;
-  promise.finally(() => {
-    if (state.quickReview.commentPromise === promise) state.quickReview.commentPromise = null;
-  }).catch(() => null);
-  return promise;
-}
-
-async function flushQuickReviewComment(asset, comment, runId) {
-  clearQuickReviewCommentTimer();
-  const quick = state.quickReview;
-  if (quick.commentPromise) await quick.commentPromise.catch(() => null);
-  if (!quickReviewSessionIsCurrent(runId, keyFor(asset))) return false;
-  if (comment === (asset.comment || '')) return true;
-  const promise = enqueueQuickReviewCommentSave(keyFor(asset), asset.collection, asset.asset_id, comment, runId);
-  const saved = await promise.then(() => true).catch(error => {
-    showError(error);
-    return false;
-  });
-  return saved && quickReviewSessionIsCurrent(runId, keyFor(asset));
-}
-
-async function saveQuickReviewCommentSnapshot(assetKey, collection, assetId, comment, runId) {
-  const request = ++state.quickReviewCommentRequest;
-  const current = quickReviewAssetAt();
-  if (quickReviewSessionIsCurrent(runId, assetKey) && current && keyFor(current) === assetKey) $('#quickReviewCommentState').textContent = '保存中…';
-  await apiPost('/api/comment', {collection, asset_id: assetId, comment});
-  updateQuickReviewAsset(assetKey, {comment, is_new: false});
-  renderWorkspaceState();
-  if (quickReviewSessionIsCurrent(runId, assetKey) && request === state.quickReviewCommentRequest && $('#quickReviewComment').value === comment) {
-    $('#quickReviewCommentState').textContent = '已保存';
-  }
-}
-
-function scheduleQuickReviewCommentSave() {
-  clearQuickReviewCommentTimer();
-  const asset = quickReviewAssetAt();
-  if (!asset) return;
-  const assetKey = keyFor(asset);
-  const collection = asset.collection;
-  const assetId = asset.asset_id;
-  const comment = $('#quickReviewComment').value;
-  const runId = state.quickReview.runId;
-  $('#quickReviewCommentState').textContent = '未保存';
-  state.quickReview.commentTimer = setTimeout(() => {
-    state.quickReview.commentTimer = null;
-    enqueueQuickReviewCommentSave(assetKey, collection, assetId, comment, runId).catch(showError);
-  }, 500);
-}
-
-async function quickReviewDecision(status) {
-  const quick = state.quickReview;
-  if (!isQuickReviewOpen() || quick.saving) return;
-  const asset = quickReviewAssetAt();
-  if (!asset) return;
-  const assetKey = keyFor(asset);
-  const runId = quick.runId;
-  const decisionComment = $('#quickReviewComment').value;
-  const unchanged = (asset.status || '') === status;
-  quick.saving = true;
-  renderQuickReview();
-  let request = 0;
-  try {
-    if (!await flushQuickReviewComment(asset, decisionComment, runId)) return;
-    if (!quickReviewSessionIsCurrent(runId, assetKey)) return;
-    if (unchanged) {
-      quickReviewMove(1, true);
-      return;
-    }
-    const previousStatus = asset.status || '';
-    const previousComment = asset.comment || '';
-    request = ++state.quickReviewSaveRequest;
-    await apiPost('/api/review', {collection: asset.collection, asset_id: asset.asset_id, status, comment: decisionComment});
-    updateQuickReviewAsset(assetKey, {status, comment: decisionComment, is_new: false});
-    renderWorkspaceState();
-    if (!quickReviewRequestIsCurrent(request, assetKey, runId)) return;
-    quick.lastAction = {assetKey, collection: asset.collection, assetId: asset.asset_id, index: quick.index, status, comment: decisionComment, previousStatus, previousComment};
-    if (quick.index >= quick.keys.length - 1) {
-      const assets = quickReviewAssets();
-      const remaining = assets.filter(candidate => !candidate.status).length;
-      toast(remaining ? `最后一张 · 还有 ${remaining} 项待审` : '本轮已审完 · Esc 退出');
-    }
-    quickReviewMove(1, true);
-    refreshReviewState().catch(showError);
-  } finally {
-    if (quickReviewSessionIsCurrent(runId) && (!request || request === state.quickReviewSaveRequest)) {
-      quick.saving = false;
-      renderQuickReview();
-    }
-  }
-}
-
-async function quickReviewUndo() {
-  const quick = state.quickReview;
-  const action = quick.lastAction;
-  if (!isQuickReviewOpen() || quick.saving || !action) return;
-  const runId = quick.runId;
-  const request = ++state.quickReviewSaveRequest;
-  quick.saving = true;
-  renderQuickReview();
-  try {
-    const params = new URLSearchParams({collection: action.collection, asset_id: action.assetId});
-    const historyResponse = await fetch('/api/review-history?' + params, {cache: 'no-store'});
-    if (!historyResponse.ok) throw new Error('无法确认可撤销的审核记录');
-    const history = await historyResponse.json();
-    if (!quickReviewSessionIsCurrent(runId) || request !== state.quickReviewSaveRequest) return;
-    const latest = (history.events || []).find(event => !event.undone_at);
-    if (!latest || latest.action !== 'review' || latest.old_status !== action.previousStatus || latest.new_status !== action.status || latest.old_comment !== action.previousComment || latest.new_comment !== action.comment) {
-      throw new Error('该素材已有后续意见或审核变更；请在详情的历史记录中处理，避免误撤销。');
-    }
-    const data = await apiPost('/api/undo', {collection: action.collection, asset_id: action.assetId});
-    const result = data.result || {};
-    updateQuickReviewAsset(action.assetKey, {status: result.status || '', comment: result.comment ?? action.previousComment});
-    renderWorkspaceState();
-    if (!quickReviewSessionIsCurrent(runId) || request !== state.quickReviewSaveRequest) return;
-    const index = quick.keys.indexOf(action.assetKey);
-    if (index >= 0) quick.index = index;
-    quick.lastAction = null;
-    refreshReviewState().catch(showError);
-  } finally {
-    if (quickReviewSessionIsCurrent(runId) && request === state.quickReviewSaveRequest) {
-      quick.saving = false;
-      renderQuickReview();
-    }
-  }
-}
-
-function openQuickReviewDetails() {
-  const asset = quickReviewAssetAt();
-  if (!asset) return;
-  const index = state.filtered.findIndex(candidate => keyFor(candidate) === keyFor(asset));
-  if (index < 0) {
-    showError(new Error('已不在当前筛选中，退出快审后再打开'));
-    return;
-  }
-  $('#quickReview').classList.add('suspended');
-  $('#quickReview').setAttribute('aria-hidden', 'true');
-  openAt(index);
-}
-
-function compareQuickReviewAssets() {
-  const assets = quickReviewAssets();
-  const index = state.quickReview.index;
-  if (index < 1 || !assets[index]) return;
-  $('#quickReview').classList.add('suspended');
-  $('#quickReview').setAttribute('aria-hidden', 'true');
-  openCompareAssets([assets[index - 1], assets[index]]);
+function syncFilmstrip() {
+  const strip = $('#filmstrip');
+  if (strip.dataset.gen !== String(state.filterGen)) renderFilmstrip();
+  strip.querySelector('.film-frame.active')?.classList.remove('active');
+  const frame = strip.querySelector(`[data-film="${state.current}"]`);
+  frame?.classList.add('active');
+  frame?.scrollIntoView({block: 'nearest', inline: 'center'});
 }
 
 function applyFilter() {
@@ -1091,15 +831,14 @@ function applyFilter() {
     return b.mtime - a.mtime;
   });
   state.filtered = rows;
+  state.filterGen += 1;
   // Scene and use only add information when the view spans collections.
   const mixedScope = !isSingleCollectionScope();
   grid.innerHTML = rows.map((asset, index) => {
     const selected = state.selected.has(keyFor(asset));
     const taxonomy = assetTaxonomy(asset);
     const status = asset.status || '';
-    const badge = status
-      ? `<span class="badge ${esc(status)}">${esc(statusDisplay(status))}</span>`
-      : (asset.is_new ? '<span class="badge new" title="新素材" aria-label="新素材"></span>' : '');
+    const badge = status ? `<span class="badge ${esc(status)}">${esc(statusDisplay(status))}</span>` : '';
     const meta = [
       asset.width && asset.height ? `${asset.width}×${asset.height}` : '',
       assetTypeLabel(asset),
@@ -1113,7 +852,7 @@ function applyFilter() {
       asset.family_name ? `<span class="chip" title="版本组">${esc(asset.family_name)}</span>` : '',
       asset.family_preferred ? '<span class="chip preferred">首选</span>' : '',
     ].join('');
-    const quick = [['approved', '✓', '通过', 1], ['maybe', '?', '待定', 2], ['rejected', '✕', '拒绝', 3]]
+    const quick = [['approved', '✓', '通过', 1], ['rejected', '✕', '拒绝', 2], ['maybe', '✎', '修改', 3]]
       .map(([value, mark, label, key]) => `<button type="button" data-quick="${value}" class="${status === value ? 'on' : ''}" title="${label} (${key})" aria-label="${label} ${esc(asset.name)}">${mark}</button>`).join('');
     return `<article class="card${selected ? ' selected' : ''}${status ? ` status-${esc(status)}` : ''}" data-i="${index}" tabindex="0" aria-pressed="${state.selectionMode ? String(selected) : 'false'}" title="${esc(asset.rel || asset.name)}">
       <div class="thumb-wrap"><img class="thumb" loading="lazy" decoding="async" src="${esc(asset.thumb)}" alt="${esc(asset.name)}">${asset.media_type === 'video' ? '<span class="video-play" aria-hidden="true">▶</span>' : ''}${badge}<input class="select-toggle" data-select="${index}" type="checkbox" ${selected ? 'checked' : ''} ${state.selectionMode ? '' : 'tabindex="-1"'} aria-label="${selected ? '取消选择' : '选择'} ${esc(asset.name)}"><div class="card-actions">${quick}</div></div>
@@ -1140,7 +879,7 @@ function applyFilter() {
     };
     element.onkeydown = event => {
       if (event.target !== element) return;
-      const reviewKey = {1: 'approved', 2: 'maybe', 3: 'rejected', 0: ''}[event.key];
+      const reviewKey = {1: 'approved', 2: 'rejected', 3: 'maybe', 0: ''}[event.key];
       if (reviewKey !== undefined && !event.ctrlKey && !event.metaKey && !state.selectionMode) {
         event.preventDefault();
         const asset = state.filtered[index];
@@ -1165,8 +904,9 @@ function applyFilter() {
     };
   });
   renderWorkspaceState();
-  updateQuickReviewLaunch();
+  updateReviewLaunch();
   updateBulk();
+  if (!modal.classList.contains('hidden')) syncFilmstrip();
 }
 
 // Selection changes only touch card classes; re-rendering the grid would
@@ -1192,6 +932,11 @@ function syncSelectionUI() {
 async function cardReview(index, status) {
   const asset = state.filtered[index];
   if (!asset || !asset.asset_id) return;
+  if (status === 'maybe' && asset.status !== 'maybe') {
+    openAt(index);
+    await review('maybe');
+    return;
+  }
   const next = (asset.status || '') === status ? '' : status;
   const key = keyFor(asset);
   await apiPost('/api/review', {collection: asset.collection, asset_id: asset.asset_id, status: next, comment: asset.comment || ''});
@@ -1289,8 +1034,8 @@ function updateBulk() {
   $('#selectAllVisible').disabled = state.filtered.length === 0;
   $('#clearSelection').disabled = count === 0;
   const items = [
-    {value: 'approve', label: '通过', disabled: !count || !singleCollection}, {value: 'maybe', label: '待定', disabled: !count || !singleCollection},
-    {value: 'reject', label: '拒绝', disabled: !count || !singleCollection}, {value: 'clear-review', label: '清除状态', disabled: !count || !singleCollection},
+    {value: 'approve', label: '通过', disabled: !count || !singleCollection}, {value: 'reject', label: '拒绝', disabled: !count || !singleCollection},
+    {value: 'maybe', label: '修改', disabled: !count || !singleCollection}, {value: 'clear-review', label: '清除状态', disabled: !count || !singleCollection},
     {value: 'compare', label: '对比', disabled: count < 2},
     {value: 'group', label: '建版本组', disabled: count < 2 || !singleCollection},
     {value: 'clear-selection', label: '清空'},
@@ -1421,7 +1166,8 @@ function openAt(index, updateUrl = true) {
   $('#filename').textContent = asset.name;
   const resolution = asset.width && asset.height ? `${asset.width}×${asset.height}` : (isVideo ? '视频' : '');
   $('#details').textContent = [asset.rel !== asset.name ? asset.rel : '', resolution, formatBytes(asset.size)].filter(Boolean).join(' · ');
-  $('#stagePosition').textContent = `${state.current + 1} / ${state.filtered.length}`;
+  const reviewedCount = state.filtered.filter(item => item.status).length;
+  $('#stagePosition').textContent = `${state.current + 1} / ${state.filtered.length} · 已审 ${reviewedCount}`;
   $('#reviewQuestion').textContent = useQuestion(asset);
   $('#reviewQuestion').dataset.use = assetTaxonomy(asset).use;
   document.querySelector('.annotation-field')?.classList.toggle('hidden', isVideo);
@@ -1441,6 +1187,7 @@ function openAt(index, updateUrl = true) {
   notice.classList.toggle('hidden', !asset.preview_error);
   modal.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
+  syncFilmstrip();
   cancelAnnotationMode();
   loadAnnotations(asset).catch(showError);
   if (updateUrl && asset.asset_id) history.replaceState(null, '', assetUrl(asset));
@@ -1462,16 +1209,18 @@ function close() {
   state.annotations = [];
   cancelAnnotationMode();
   renderAnnotations();
-  if (isQuickReviewOpen()) {
-    $('#quickReview').classList.remove('suspended');
-    $('#quickReview').setAttribute('aria-hidden', 'false');
-    requestAnimationFrame(() => $('#quickReviewApprove')?.focus());
-  }
   if (state.active) history.replaceState(null, '', collectionUrl(state.active));
-  if (compareModal.classList.contains('hidden') && !isQuickReviewOpen()) document.body.style.overflow = '';
+  if (compareModal.classList.contains('hidden')) document.body.style.overflow = '';
 }
 
 const step = amount => openAt(state.current + amount);
+
+function focusComment(textarea) {
+  requestAnimationFrame(() => {
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  });
+}
 
 // Focused-view zoom: transform the image surface so annotation geometry,
 // which is measured from its bounding box, stays aligned at any scale.
@@ -1513,22 +1262,56 @@ function updateLocal(assetOrRel, patch) {
   if (asset) Object.assign(asset, patch);
 }
 
+let reviewing = false;
+
 async function review(status) {
   const asset = state.filtered[state.current];
-  const comment = $('#comment').value;
-  clearTimeout(commentSaveTimer);
-  commentSaveTimer = null;
-  await apiPost('/api/review', {collection: asset.collection, asset_id: asset.asset_id, status, comment});
-  updateLocal(asset.asset_id || asset.rel, {status, comment, is_new: false});
-  applyFilter();
-  await refreshReviewState();
-  const index = state.filtered.findIndex(item => keyFor(item) === keyFor(asset));
-  // When the decision moves the asset out of the current filter (for example
-  // while working through "待审"), continue with the asset that took its place.
-  if (index >= 0) openAt(index);
-  else if (state.filtered.length) openAt(Math.min(state.current, state.filtered.length - 1));
-  else close();
-  if (index < 0) toast(`${statusDisplay(status)} · ${asset.name}`);
+  if (!asset || reviewing) return;
+  reviewing = true;
+  try {
+    const comment = $('#comment').value;
+    clearTimeout(commentSaveTimer);
+    commentSaveTimer = null;
+    const key = keyFor(asset);
+    const position = state.current;
+    await apiPost('/api/review', {collection: asset.collection, asset_id: asset.asset_id, status, comment});
+    updateLocal(key, {status, comment, is_new: false});
+    state.lastReview = {key, name: asset.name};
+    applyFilter();
+    refreshReviewState().catch(showError);
+    const index = state.filtered.findIndex(item => keyFor(item) === key);
+    // 通过 / 拒绝 move straight to the next pending asset; 修改 stays so the
+    // comment can be written right away.
+    if (status === 'approved' || status === 'rejected') {
+      const next = nextPendingIndex(index >= 0 ? index : position - 1);
+      if (next >= 0 && next !== index) {
+        openAt(next);
+        return;
+      }
+      toast('当前范围已全部审完');
+    }
+    if (index >= 0) {
+      openAt(index);
+      if (status === 'maybe') focusComment($('#comment'));
+    } else if (state.filtered.length) openAt(Math.min(position, state.filtered.length - 1));
+    else close();
+  } finally {
+    reviewing = false;
+  }
+}
+
+async function undoLastReview() {
+  const last = state.lastReview;
+  if (!last) return;
+  const index = state.filtered.findIndex(item => keyFor(item) === last.key);
+  if (index < 0) {
+    toast('上一项已不在当前筛选中');
+    return;
+  }
+  openAt(index);
+  await undoReview();
+  state.lastReview = null;
+  toast(`已撤销 · ${last.name}`);
 }
 
 let commentSaveTimer = null;
@@ -1578,13 +1361,13 @@ async function bulkReview(status) {
 
 async function undoReview() {
   const asset = state.filtered[state.current];
+  if (!asset) return;
   const data = await apiPost('/api/undo', {collection: asset.collection, asset_id: asset.asset_id});
-  updateLocal(asset.asset_id || asset.rel, {status: data.result.status, comment: data.result.comment});
-  renderReviewDecision(state.images.find(item => keyFor(item) === keyFor(asset)));
-  $('#comment').value = data.result.comment;
+  updateLocal(keyFor(asset), {status: data.result.status || '', comment: data.result.comment ?? ''});
   applyFilter();
-  await refreshReviewState();
-  await showHistory(asset.asset_id);
+  refreshReviewState().catch(showError);
+  const index = state.filtered.findIndex(item => keyFor(item) === keyFor(asset));
+  if (index >= 0) openAt(index);
 }
 
 async function showHistory(assetIdOverride) {
@@ -2048,12 +1831,7 @@ function openCompare() {
 
 function closeCompare() {
   compareModal.classList.add('hidden');
-  if (isQuickReviewOpen()) {
-    $('#quickReview').classList.remove('suspended');
-    $('#quickReview').setAttribute('aria-hidden', 'false');
-    requestAnimationFrame(() => $('#quickReviewCompare')?.focus());
-  }
-  if (modal.classList.contains('hidden') && !isQuickReviewOpen()) document.body.style.overflow = '';
+  if (modal.classList.contains('hidden')) document.body.style.overflow = '';
 }
 
 function formatEventTime(value) {
@@ -2115,7 +1893,7 @@ function activityPresentation(event) {
   const status = String(event.new_status || '').toLowerCase();
   if ((action === 'review' || action === 'batch') && status === 'approved') return {tone: 'approved', mark: '✓', label: '审核'};
   if ((action === 'review' || action === 'batch') && status === 'rejected') return {tone: 'rejected', mark: '×', label: '审核'};
-  if ((action === 'review' || action === 'batch') && status === 'maybe') return {tone: 'maybe', mark: '?', label: '审核'};
+  if ((action === 'review' || action === 'batch') && status === 'maybe') return {tone: 'maybe', mark: '✎', label: '审核'};
   if (action === 'asset_added' || action === 'asset_restored') return {tone: 'added', mark: '+', label: '入库'};
   if (action === 'comment' || action.startsWith('annotation_')) return {tone: 'note', mark: '•', label: '意见'};
   if (action.startsWith('family_')) return {tone: 'family', mark: '◇', label: '版本组'};
@@ -2286,7 +2064,7 @@ function paletteCommands() {
     {label: '素材', alias: 'gallery', run: () => setWorkspaceTab('gallery')},
     {label: '记录', alias: 'activity history', run: () => setWorkspaceTab('activity')},
     {label: '交付', alias: 'approved handoff', run: () => setWorkspaceTab('approved')},
-    {label: '快审', alias: 'quick review cull', run: () => startQuickReview()},
+    {label: '审核', alias: 'review start quick cull', run: () => startReview()},
     {label: '搜索', alias: 'search find', keys: '/', run: () => $('#search').focus()},
     {label: '只看待审', alias: 'unreviewed filter', run: () => setStatusFilter('unreviewed')},
     {label: '保存视图…', alias: 'save view', run: () => saveCurrentView()},
@@ -2312,8 +2090,8 @@ function paletteCommands() {
   if (!modal.classList.contains('hidden')) {
     commands.push(
       {label: '通过', alias: 'approve', keys: '1', run: () => review('approved')},
-      {label: '待定', alias: 'maybe', keys: '2', run: () => review('maybe')},
-      {label: '拒绝', alias: 'reject', keys: '3', run: () => review('rejected')},
+      {label: '拒绝', alias: 'reject', keys: '2', run: () => review('rejected')},
+      {label: '修改', alias: 'revise maybe', keys: '3', run: () => review('maybe')},
       {label: '清除状态', alias: 'clear', keys: '0', run: () => review('')},
       {label: '100% / 适应', alias: 'zoom actual size', keys: 'Z', run: () => toggleActualSize()},
       {label: '历史', alias: 'history', run: () => showHistory()},
@@ -2415,17 +2193,11 @@ document.addEventListener('pointerdown', event => {
   if (!event.target.closest('.rail-head')) closeProjectMenu();
 });
 $('#view').onchange = () => setView($('#view').value).catch(showError);
-$('#quickReviewLaunch').onclick = () => startQuickReview();
-$('#closeQuickReview').onclick = () => closeQuickReview();
-$('#quickReviewPrevious').onclick = () => quickReviewMove(-1);
-$('#quickReviewNext').onclick = () => quickReviewMove(1);
-$('#quickReviewApprove').onclick = () => quickReviewDecision('approved').catch(showError);
-$('#quickReviewMaybe').onclick = () => quickReviewDecision('maybe').catch(showError);
-$('#quickReviewReject').onclick = () => quickReviewDecision('rejected').catch(showError);
-$('#quickReviewUndo').onclick = () => quickReviewUndo().catch(showError);
-$('#quickReviewDetailsButton').onclick = () => openQuickReviewDetails();
-$('#quickReviewCompare').onclick = () => compareQuickReviewAssets();
-$('#quickReviewComment').oninput = scheduleQuickReviewCommentSave;
+$('#startReview').onclick = () => startReview();
+$('#filmstrip').onclick = event => {
+  const frame = event.target.closest('[data-film]');
+  if (frame) openAt(Number(frame.dataset.film));
+};
 $('#selectionMode').onclick = () => setSelectionMode(!state.selectionMode);
 $('#selectAllVisible').onclick = () => selectAllVisible();
 $('#clearSelection').onclick = () => clearSelection();
@@ -2478,6 +2250,27 @@ stageViewport.ondblclick = event => {
 };
 $('#zoomLevel').onclick = () => toggleActualSize();
 $('#comment').oninput = scheduleCommentSave;
+// In 意见: Ctrl+Enter saves and moves to the next pending asset; Esc leaves the field.
+$('#comment').onkeydown = event => {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    const asset = state.filtered[state.current];
+    if (!asset) return;
+    clearTimeout(commentSaveTimer);
+    commentSaveTimer = null;
+    const key = keyFor(asset);
+    saveCommentSnapshot(key, asset.collection, asset.asset_id, $('#comment').value).then(() => {
+      $('#comment').blur();
+      const index = state.filtered.findIndex(item => keyFor(item) === key);
+      const next = nextPendingIndex(index >= 0 ? index : state.current - 1);
+      if (next >= 0 && next !== index) openAt(next);
+      else toast('当前范围已全部审完');
+    }).catch(showError);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    $('#comment').blur();
+  }
+};
 $('#close').onclick = close;
 $('#prev').onclick = () => step(-1);
 $('#next').onclick = () => step(1);
@@ -2536,54 +2329,28 @@ document.onkeydown = event => {
   const editing = event.target && ['TEXTAREA', 'INPUT', 'SELECT'].includes(event.target.tagName);
   if (!modal.classList.contains('hidden')) {
     if (editing) return;
-    if (event.key === 'Escape' && state.annotationMode) cancelAnnotationMode();
+    if (event.repeat && ['1', '2', '3', '0'].includes(event.key)) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      undoLastReview().catch(showError);
+    } else if (event.key === 'Escape' && state.annotationMode) cancelAnnotationMode();
     else if (event.key === 'Escape') close();
     else if (event.key === 'ArrowLeft') step(-1);
     else if (event.key === 'ArrowRight') step(1);
     else if (event.ctrlKey || event.metaKey || event.altKey) return;
+    else if (event.key.toLowerCase() === 'n') {
+      event.preventDefault();
+      focusComment($('#comment'));
+    }
     else if (event.key === '1') review('approved').catch(showError);
-    else if (event.key === '2') review('maybe').catch(showError);
-    else if (event.key === '3') review('rejected').catch(showError);
+    else if (event.key === '2') review('rejected').catch(showError);
+    else if (event.key === '3') review('maybe').catch(showError);
     else if (event.key === '0') review('').catch(showError);
     else if (event.key.toLowerCase() === 'z') toggleActualSize();
     return;
   }
-  if (isQuickReviewOpen()) {
-    if (editing) return;
-    if (event.repeat && (((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') || ['1', '2', '3'].includes(event.key))) {
-      event.preventDefault();
-      return;
-    }
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
-      event.preventDefault();
-      quickReviewUndo().catch(showError);
-    } else if (event.key.toLowerCase() === 'n' && !event.ctrlKey && !event.metaKey) {
-      event.preventDefault();
-      $('#quickReviewNote').open = true;
-      $('#quickReviewComment').focus();
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      closeQuickReview();
-    } else if (event.key === 'ArrowLeft') {
-      event.preventDefault();
-      quickReviewMove(-1);
-    } else if (event.key === 'ArrowRight') {
-      event.preventDefault();
-      quickReviewMove(1);
-    } else if (event.key === '1') {
-      event.preventDefault();
-      quickReviewDecision('approved').catch(showError);
-    } else if (event.key === '2') {
-      event.preventDefault();
-      quickReviewDecision('maybe').catch(showError);
-    } else if (event.key === '3') {
-      event.preventDefault();
-      quickReviewDecision('rejected').catch(showError);
-    }
-    return;
-  }
   // Hover-to-decide: 1/2/3 on the card under the pointer, 0 clears it.
-  const hoverKey = {1: 'approved', 2: 'maybe', 3: 'rejected', 0: ''}[event.key];
+  const hoverKey = {1: 'approved', 2: 'rejected', 3: 'maybe', 0: ''}[event.key];
   if (hoverKey !== undefined && !editing && !event.defaultPrevented && !event.ctrlKey && !event.metaKey && !event.altKey && !state.selectionMode && state.workspaceTab !== 'activity') {
     const hovered = grid.querySelector('.card:hover');
     const asset = hovered ? state.filtered[Number(hovered.dataset.i)] : null;
@@ -2619,7 +2386,6 @@ document.onkeydown = event => {
 
 async function pollCatalog() {
   if (document.hidden || !state.active || !isSingleCollectionScope() || state.selected.size) return;
-  if (isQuickReviewOpen()) return;
   if (!modal.classList.contains('hidden') || !compareModal.classList.contains('hidden')) return;
   const scopeRequest = state.scopeRequest;
   const active = state.active;

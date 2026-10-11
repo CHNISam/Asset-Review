@@ -4,6 +4,10 @@ All notable changes to Asset Viewer will be documented here.
 
 ## Unreleased
 
+- Merge quick review into the detail view: one review surface. 审核 opens it at the first pending item; `1` 通过 and `2` 拒绝 save and jump to the next pending item, `3` 修改 stays and focuses 意见 (`Ctrl+Enter` saves and moves on), `Ctrl+Z` undoes the last decision, and the filmstrip and progress live in the view. The standalone quick-review mode is removed.
+- Rename the third decision to 修改 (needs changes, with a comment); order is 通过 / 拒绝 / 修改 everywhere. Drop the 新 chip and dot: "unseen" is a viewing state, not a decision, and new or changed files are already 待审.
+- Light theme by default (dark and follow-system are opt-in); review stages follow the theme. Sidebar without colour tags, topics fold like folders, counts only where work is waiting, shared leading words trimmed from sibling names, quiet scrollbar. Chinese text uses regular weight only, since Microsoft YaHei has no medium.
+
 - Make the use field state the decision it asks for: 参考 方向对吗？ / 设计 能进制作吗？ / 实机 实现到位吗？ / 资产 能交付吗？, shown above the decision buttons and in quick review. Add `Archive` / `Evidence` (存档) for task evidence that nobody needs to judge: it is excluded from pending counts, progress and quick review. Undeclared material reads 未标注.
 - Redesign the sidebar around one project at a time: a project switcher at the top (with search once there are many projects), then collapsible scenes and topics. A topic with a single collection becomes one row, and a multi-collection topic header opens all of them together (new topic scope). Right-hand numbers are real pending counts from `/api/pending`.
 - Apple-like visual pass: system font and system blue, borderless tonal controls, a segmented 素材 / 记录 / 交付 control in the top bar, translucent menus, toasts and palette, photo tiles without card chrome, and black stages for detail view and quick review. The toolbar is now a single row.

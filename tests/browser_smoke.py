@@ -262,9 +262,10 @@ def main() -> None:
                     page.locator('#reviewStatus [data-status="approved"]').click()
                 review_response = review_response_info.value
                 assert review_response.ok, f"review mutation returned HTTP {review_response.status}"
+                # 通过 saves and moves straight to the next pending asset.
                 wait_until(
-                    "approved decision button",
-                    lambda: page.locator("#reviewStatus").get_attribute("data-value") == "approved",
+                    "auto-advance to the next pending asset",
+                    lambda: page.locator("#filename").inner_text().strip() != "06-homepage-banner.png",
                 )
 
                 reviews = get_json(f"{base_url}/api/reviews?collection={demo_slug}&present=1")
@@ -274,65 +275,60 @@ def main() -> None:
                 )
                 assert banner_review and banner_review.get("status") == "approved", reviews
 
-                page.locator("#close").click()
-                page.locator("#modal").wait_for(state="hidden")
-
-                # Fast culling is a thin view over the same native review
-                # endpoints: mouse decisions, keyboard decisions, undo,
-                # comments, native details, and comparison all stay local.
-                page.locator("#quickReviewLaunch").click()
-                page.locator("#quickReview").wait_for(state="visible")
-                wait_until(
-                    "quick-review filmstrip",
-                    lambda: page.locator("#quickReviewFilmstrip .quick-review-frame").count() == 6,
-                )
-                first_quick_title = page.locator("#quickReviewTitle").inner_text()
+                # Review has one surface: the same view keeps going with
+                # keyboard decisions, undo, comments and the filmstrip.
+                wait_until("filmstrip", lambda: page.locator("#filmstrip .film-frame").count() == 6)
                 with page.expect_response(
                     lambda response: urllib.parse.urlsplit(response.url).path == "/api/review"
                     and response.request.method == "POST",
                     timeout=15_000,
-                ) as quick_mouse_review:
-                    page.locator("#quickReviewApprove").click()
-                assert quick_mouse_review.value.ok
-                wait_until(
-                    "quick-review auto-advance",
-                    lambda: page.locator("#quickReviewTitle").inner_text() != first_quick_title,
-                )
-                with page.expect_response(
-                    lambda response: urllib.parse.urlsplit(response.url).path == "/api/review"
-                    and response.request.method == "POST",
-                    timeout=15_000,
-                ) as quick_keyboard_review:
-                    page.keyboard.press("2")
-                assert quick_keyboard_review.value.ok
+                ) as keyboard_review:
+                    page.keyboard.press("1")
+                assert keyboard_review.value.ok
                 with page.expect_response(
                     lambda response: urllib.parse.urlsplit(response.url).path == "/api/undo"
                     and response.request.method == "POST",
                     timeout=15_000,
-                ) as quick_undo:
+                ) as keyboard_undo:
                     page.keyboard.press("Control+Z")
-                assert quick_undo.value.ok
+                assert keyboard_undo.value.ok
+                with page.expect_response(
+                    lambda response: urllib.parse.urlsplit(response.url).path == "/api/review"
+                    and response.request.method == "POST",
+                    timeout=15_000,
+                ) as keyboard_review_again:
+                    page.keyboard.press("1")
+                assert keyboard_review_again.value.ok
                 with page.expect_response(
                     lambda response: urllib.parse.urlsplit(response.url).path == "/api/comment"
                     and response.request.method == "POST",
                     timeout=15_000,
-                ) as quick_comment:
+                ) as keyboard_comment:
                     page.keyboard.press("n")
-                    page.locator("#quickReviewComment").fill("Increase contrast before the next pass.")
-                assert quick_comment.value.ok
-                page.locator("#quickReviewCompare").click()
+                    page.locator("#comment").fill("Increase contrast before the next pass.")
+                assert keyboard_comment.value.ok
+                page.locator("#comment").press("Escape")
+                page.locator("#close").click()
+                page.locator("#modal").wait_for(state="hidden")
+
+                # 审核 opens the same view at the first candidate.
+                page.locator("#startReview").click()
+                page.locator("#modal").wait_for(state="visible")
+                page.locator("#close").click()
+                page.locator("#modal").wait_for(state="hidden")
+
+                # Comparison stays available from a multi-selection.
+                page.locator("#selectionMode").click()
+                page.locator("#grid .card").nth(0).click()
+                page.locator("#grid .card").nth(1).click()
+                page.locator("#selectionAction").select_option("compare")
                 page.locator("#compareModal").wait_for(state="visible")
                 page.locator("#closeCompare").click()
                 page.locator("#compareModal").wait_for(state="hidden")
-                page.locator("#quickReviewDetailsButton").click()
-                page.locator("#modal").wait_for(state="visible")
-                page.locator("#close").click()
-                page.locator("#quickReview").wait_for(state="visible")
-                page.locator("#closeQuickReview").click()
-                page.locator("#quickReview").wait_for(state="hidden")
+                page.locator("#selectionMode").click()
 
                 page.locator("#tabApproved").click()
-                wait_until("quick-review approval appears in Approved", lambda: page.locator("#grid .card").count() == 3)
+                wait_until("approvals appear in Approved", lambda: page.locator("#grid .card").count() == 3)
                 assert page.locator("#approvedPanel").is_visible()
 
                 page.locator("#view").select_option("activity")
