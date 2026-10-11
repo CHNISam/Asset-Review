@@ -632,7 +632,7 @@ function renderViewer() {
       <section class="vs-stage" data-stage-area>${visual}</section>
       <aside class="vs-panel">${current ? viewerPanel(view, current, culled) : ''}</aside>
     </div>
-    <nav class="vs-film"><span class="film-label">${esc(view.label)} · 版本</span>${shown.map(r => `<button type="button" class="film${r.revision_id === current?.revision_id ? ' active' : ''}${r.revision_id === other?.revision_id ? ' compare' : ''}${r.state === 'culled' ? ' culled' : ''}" data-rev="${esc(r.revision_id)}" title="${esc(r.label)}">${media(r, 'thumb')}<span>${esc(r.label)}${r.note ? ` · ${esc(r.note.split(/[，,。:：]/)[0].slice(0, 14))}` : ''}${r.selected ? ' ●' : ''}</span></button>`).join('')}
+    <nav class="vs-film"><span class="film-label">${esc(view.label)} · ${all.some(r => r.kind === 'option') ? '方案' : '版本'}</span>${shown.map(r => `<button type="button" class="film${r.revision_id === current?.revision_id ? ' active' : ''}${r.revision_id === other?.revision_id ? ' compare' : ''}${r.state === 'culled' ? ' culled' : ''}" data-rev="${esc(r.revision_id)}" title="${esc(r.label)}">${media(r, 'thumb')}<span>${esc(r.label)}${r.note ? ` · ${esc(r.note.split(/[，,。:：]/)[0].slice(0, 14))}` : ''}${r.selected ? ' ●' : ''}</span></button>`).join('')}
       ${files.length > 1 ? `<span class="film-sep"></span><span class="film-label">${esc(current.label)} · 预览 ${files.length}</span>${files.map((f, i) => `<button type="button" class="film shot${i === shotIndex ? ' active' : ''}" data-shot="${i}" title="${esc(i ? f.label : '主图')}">${media(f, 'thumb')}<span>${esc(i ? (f.label || `预览 ${i}`) : '主图')}</span></button>`).join('')}` : ''}</nav>`;
   applyStyles($('#viewStudio'));
   if (current && S.viewer.loadedFor !== current.revision_id) loadAnnotations(current).catch(console.error);
@@ -656,7 +656,7 @@ function viewerPanel(view, current, culled) {
       ${current.state === 'culled' ? `<button type="button" class="button quiet wide" data-restore="${esc(current.revision_id)}">恢复为候选</button>`
         : !isSelected && !current.locked ? `<button type="button" class="button quiet wide" data-cull="${esc(current.revision_id)}">不采用</button>` : ''}
     </div>
-    ${others.length ? `<label class="vs-field"><span>对比</span><select data-compare-pick><option value="">选择另一个版本</option>${others.map(r => `<option value="${esc(r.revision_id)}"${r.revision_id === S.viewer.compare ? ' selected' : ''}>${esc(r.label)}${r.selected ? '（已选用）' : ''}</option>`).join('')}</select></label>` : ''}
+    ${others.length ? `<label class="vs-field"><span>对比</span><select data-compare-pick><option value="">${current.kind === 'option' ? '选择另一个方案' : '选择另一个版本'}</option>${others.map(r => `<option value="${esc(r.revision_id)}"${r.revision_id === S.viewer.compare ? ' selected' : ''}>${esc(r.label)}${r.selected ? '（已选用）' : ''}</option>`).join('')}</select></label>` : ''}
     <label class="vs-field"><span>意见</span><textarea data-comment maxlength="10000" placeholder="这一版哪里要改">${esc(current.comment)}</textarea><small class="save-hint" data-comment-state></small></label>
     <div class="vs-field${current.media_type === 'audio' ? ' hidden' : ''}"><span>标注 <button type="button" class="text-btn${S.viewer.pinMode ? ' on' : ''}" data-pin-mode>${S.viewer.pinMode ? '点击图片放置…' : '在图上标注'}</button></span>
       <ol class="note-list">${noteItems()}</ol></div>
