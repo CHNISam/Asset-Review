@@ -15,8 +15,7 @@ from typing import Any, Iterable
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".bmp", ".svg"}
 VIDEO_EXTS = {".mp4", ".webm", ".mov", ".m4v"}
-AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".oga", ".flac", ".m4a", ".aac", ".opus"}
-ASSET_EXTS = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS
+ASSET_EXTS = IMAGE_EXTS | VIDEO_EXTS
 VALID_STATUSES = {"", "approved", "maybe", "rejected"}
 _WRITE_LOCK = threading.RLock()
 _DB_INIT_LOCK = threading.RLock()
@@ -1677,17 +1676,6 @@ def verify_review_fingerprints(collection: str, *, bind_missing: bool = False) -
     return len(mismatches)
 
 
-# Group uses whose files are kept for the record, never queued for per-file review:
-# task evidence, and instrument sample banks (hundreds of WAVs per source version).
-NO_REVIEW_USES = {"archive", "evidence", "存档", "证据", "归档", "bank", "samplebank", "sample bank", "sources", "音源库", "采样库"}
-
-
-def review_required(collection: str) -> bool:
-    row = next((r for r in collections() if r["slug"] == collection), None)
-    use = (row.get("group") or "").split("/")[-1].strip().lower() if row else ""
-    return use not in NO_REVIEW_USES
-
-
 def collection_review_state(collection: str) -> dict[str, Any]:
     with _connection() as conn:
         state = conn.execute(
@@ -1718,7 +1706,6 @@ def collection_review_state(collection: str) -> dict[str, Any]:
         (newest_content and newest_content > completed_at) or (changed_at and changed_at > completed_at)
     ))
     complete = bool(completed_at and total > 0 and unreviewed == 0 and not stale and not scan_incomplete)
-    required = review_required(collection)
     return {
         "collection": collection,
         "completed_at": completed_at,
@@ -1732,8 +1719,7 @@ def collection_review_state(collection: str) -> dict[str, Any]:
         "scan_reason": scan["reason"] if scan else None,
         "last_scan_at": scan["last_scan_at"] if scan else None,
         "complete": complete,
-        "review_required": required,
-        "pending": required and not complete,
+        "pending": not complete,
     }
 
 def complete_collection_review(collection: str) -> dict[str, Any]:
@@ -1882,7 +1868,7 @@ def preview_path(source: Path) -> Path:
 def preview_cache_status() -> dict[str, Any]:
     root = cache_dir()
     entries = []
-    for path in [*root.glob("*.jpg"), *root.glob("peaks-*.json")]:
+    for path in root.glob("*.jpg"):
         try:
             stat = path.stat()
             entries.append((path, int(stat.st_size), float(stat.st_mtime)))
@@ -1902,7 +1888,7 @@ def prune_preview_cache(max_bytes: int, max_age_seconds: int) -> dict[str, Any]:
     root = cache_dir()
     now = datetime.now(timezone.utc).timestamp()
     entries: list[tuple[Path, int, float]] = []
-    for path in [*root.glob("*.jpg"), *root.glob("peaks-*.json")]:
+    for path in root.glob("*.jpg"):
         try:
             stat = path.stat()
             entries.append((path, int(stat.st_size), float(stat.st_mtime)))

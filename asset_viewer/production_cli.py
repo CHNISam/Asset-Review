@@ -101,7 +101,7 @@ def register(sub: Any) -> None:
     evidence.add_argument("--rel")
     evidence.add_argument("--source", default="", help="Source reference when there is no file, e.g. a .blend path")
     evidence.add_argument("--caption", default="")
-    evidence.add_argument("--kind", choices=["image", "video", "audio", "timelapse", "source"])
+    evidence.add_argument("--kind", choices=["image", "video", "timelapse", "source"])
 
     stage = cmds.add_parser("stage", help="Report stage progress (todo, wip, ready); acceptance is the owner's")
     stage.add_argument("asset")

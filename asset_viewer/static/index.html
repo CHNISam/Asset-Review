@@ -89,7 +89,7 @@
     <div class="stage-bar"><span id="stagePosition" class="stage-position"></span><span id="zoomLevel" class="zoom-level" title="滚轮缩放 · 拖动平移 · 双击切换 100%">适应</span><button class="icon-button close" id="close" type="button" aria-label="关闭">×</button></div>
     <div id="stageViewport" class="stage-viewport">
       <button class="icon-button nav prev" id="prev" type="button" aria-label="上一项">‹</button>
-      <div id="imageSurface" class="image-surface"><img id="full" alt="" draggable="false"><video id="videoFull" class="hidden" controls playsinline preload="metadata"></video><div id="audioFull" class="audio-full hidden"></div><div id="annotationLayer" class="annotation-layer" aria-label="空间批注"></div></div>
+      <div id="imageSurface" class="image-surface"><img id="full" alt="" draggable="false"><video id="videoFull" class="hidden" controls playsinline preload="metadata"></video><div id="annotationLayer" class="annotation-layer" aria-label="空间批注"></div></div>
       <button class="icon-button nav next" id="next" type="button" aria-label="下一项">›</button>
     </div>
     <nav id="filmstrip" class="filmstrip" aria-label="胶片带"></nav>
@@ -117,7 +117,6 @@
 </div>
 
 <div id="compareModal" class="modal compare-modal hidden" role="dialog" aria-modal="true" aria-label="比较选中素材"><section class="compare-stage"><div class="compare-heading"><div><strong>对比</strong><span id="compareHint"></span></div><div class="compare-controls"><select id="compareMode" aria-label="比较模式"><option value="side">并排</option><option value="overlay">叠加</option><option value="difference">差异</option></select><select id="compareLink" aria-label="缩放行为"><option value="linked">联动</option><option value="independent">独立</option></select><select id="compareActions" class="menu-select" aria-label="对比操作" title="更多操作"><option value="">⋯</option><option value="reset">重置视图</option></select><label id="overlayControl" class="overlay-control hidden">混合 <input id="overlayRange" type="range" min="0" max="100" value="50"></label><button class="icon-button" id="closeCompare" type="button" aria-label="关闭比较">×</button></div></div><div id="compareGrid" class="compare-grid"></div></section></div>
-<script src="/audio.js"></script>
 <script src="/app.js"></script>
 <script src="/studio.js"></script>
 </body></html>

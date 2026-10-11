@@ -123,7 +123,7 @@ Accepts `collection` plus `asset_id` (preferred) or `rel`. Returns the asset's d
 
 ## Media
 
-`GET /asset/file/<collection>/<rel>` honours `Range: bytes=` (206 / 416). `GET /asset/peaks/<collection>/<rel>` returns cached waveform peaks for audio: `{duration, rate, channels, bits, peaks[]}`.
+`GET /asset/file/<collection>/<rel>` honours `Range: bytes=` (206 / 416).
 
 ## Production APIs
 

@@ -18,7 +18,6 @@ from waitress import serve as waitress_serve
 from . import __version__
 from .activity import activity_feed
 from .handoff import approved_handoff
-from .audio import AUDIO_EXTS, peaks_for
 from . import production_api
 from .app import (
     BASE_CSP,
@@ -166,7 +165,7 @@ def _file_response(
 
 
 def _media_response(environ: dict[str, Any], start_response: StartResponse, path: Path, content_type: str, extra: dict[str, str]) -> Iterable[bytes]:
-    """Originals with Range support so audio/video can seek and A/B at the same time code."""
+    """Originals with Range support so video can seek."""
     size = path.stat().st_size
     span = byte_range(_header(environ, "Range") or None, size)
     if span is False:
@@ -296,8 +295,6 @@ class AssetViewerWSGI:
             return self._static(environ, start_response, "app.js", "application/javascript; charset=utf-8")
         if path == "/studio.js":
             return self._static(environ, start_response, "studio.js", "application/javascript; charset=utf-8")
-        if path == "/audio.js":
-            return self._static(environ, start_response, "audio.js", "application/javascript; charset=utf-8")
         production = production_api.handle_get(path, str(environ.get("QUERY_STRING") or ""))
         if production is not None:
             return _json_response(start_response, *production)
@@ -418,7 +415,7 @@ class AssetViewerWSGI:
             if not root_for(collection) or not rel:
                 return _json_response(start_response, 400, {"error": "collection plus rel or asset_id are required"})
             return _json_response(start_response, 200, {"collection": collection, "rel": rel, "events": review_history(collection, rel)})
-        if path.startswith(("/asset/file/", "/asset/thumb/", "/asset/preview/", "/asset/peaks/")):
+        if path.startswith("/asset/file/") or path.startswith("/asset/thumb/") or path.startswith("/asset/preview/"):
             parts = path.split("/", 4)
             if len(parts) != 5:
                 return _bytes_response(start_response, 404, "text/plain; charset=utf-8", "Not found")
@@ -426,10 +423,6 @@ class AssetViewerWSGI:
             source = safe_file(slug, relative)
             if not source:
                 return _bytes_response(start_response, 404, "text/plain; charset=utf-8", "Not found")
-            if kind == "peaks":
-                if source.suffix.lower() not in AUDIO_EXTS:
-                    return _json_response(start_response, 404, {"error": "not audio"})
-                return _json_response(start_response, 200, peaks_for(source), {"Cache-Control": "private, max-age=86400"})
             if kind == "thumb":
                 return _bytes_response(start_response, 200, "image/jpeg", make_thumbnail(source), {"Cache-Control": "private, max-age=86400"})
             if kind == "preview":

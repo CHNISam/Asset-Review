@@ -25,11 +25,9 @@ from . import __version__
 from .preview_worker import inspect_images_worker, render_preview_worker, render_video_poster_worker
 from .activity import activity_feed
 from .handoff import approved_handoff
-from .audio import peaks_for, render_waveform
 from . import production_api
 from .storage import (
     ASSET_EXTS,
-    AUDIO_EXTS,
     IMAGE_EXTS,
     VIDEO_EXTS,
     asset_rel,
@@ -291,8 +289,7 @@ def _gallery_rows(slug: str, records: list[dict[str, Any]]) -> list[dict[str, An
         rel = record["rel"]
         quoted = urllib.parse.quote(rel, safe="/")
         mtime_ns = int(record.get("mtime_ns") or 0)
-        suffix = Path(rel).suffix.lower()
-        media_type = "video" if suffix in VIDEO_EXTS else "audio" if suffix in AUDIO_EXTS else "image"
+        media_type = "video" if Path(rel).suffix.lower() in VIDEO_EXTS else "image"
         rows.append({
             "asset_id": record.get("asset_id"),
             "collection": slug,
@@ -486,13 +483,6 @@ def _render_preview(path: Path, destination: Path, max_size: tuple[int, int]) ->
         # Source-byte validation belongs inside the disposable preview worker.
         # Avoid a second parent-process filesystem touch after safe_file() has
         # already established collection containment.
-        if path.suffix.lower() in AUDIO_EXTS:
-            # Only RIFF headers and samples are read; no codec or image decoder runs on the source.
-            try:
-                return render_waveform(path, destination, max_size)
-            except (OSError, ValueError) as exc:
-                LOGGER.warning("waveform failed for %s: %s", path, exc)
-                return _placeholder_preview(path, "Audio waveform unavailable", placeholder_size, destination)
         if path.suffix.lower() in VIDEO_EXTS:
             payload = _run_isolated_worker(
                 render_video_poster_worker,
@@ -608,7 +598,7 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
             pass
 
     def _send_media(self, content_type: str, path: Path, extra: dict[str, str]) -> None:
-        """Serve an original with Range support so audio/video can seek and A/B at the same time code."""
+        """Serve an original with Range support so video can seek."""
         size = path.stat().st_size
         span = byte_range(self.headers.get("Range"), size)
         if span is False:
@@ -690,8 +680,6 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
             return self._static("app.js", "application/javascript; charset=utf-8")
         if path == "/studio.js":
             return self._static("studio.js", "application/javascript; charset=utf-8")
-        if path == "/audio.js":
-            return self._static("audio.js", "application/javascript; charset=utf-8")
         production = production_api.handle_get(path, parsed.query)
         if production is not None:
             return self._send_json(*production)
@@ -820,7 +808,7 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
             if not root_for(collection) or not rel:
                 return self._send_json(400, {"error": "collection plus rel or asset_id are required"})
             return self._send_json(200, {"collection": collection, "rel": rel, "events": review_history(collection, rel)})
-        if path.startswith(("/asset/file/", "/asset/thumb/", "/asset/preview/", "/asset/peaks/")):
+        if path.startswith("/asset/file/") or path.startswith("/asset/thumb/") or path.startswith("/asset/preview/"):
             parts = path.split("/", 4)
             if len(parts) != 5:
                 return self._send(404, "text/plain; charset=utf-8", "Not found")
@@ -828,10 +816,6 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
             source = safe_file(slug, relative)
             if not source:
                 return self._send(404, "text/plain; charset=utf-8", "Not found")
-            if kind == "peaks":
-                if source.suffix.lower() not in AUDIO_EXTS:
-                    return self._send_json(404, {"error": "not audio"})
-                return self._send_json(200, peaks_for(source), {"Cache-Control": "private, max-age=86400"})
             if kind == "thumb":
                 return self._send(200, "image/jpeg", make_thumbnail(source), {"Cache-Control": "private, max-age=86400"})
             if kind == "preview":

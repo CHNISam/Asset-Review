@@ -106,12 +106,6 @@ The file **素材库** stays one click away in the sidebar for browsing register
 
 For a project-owned reusable declaration, commit a relative `.asset-viewer.toml` and run `asset-viewer project-sync`; see [Project-native registration and metadata](#project-native-registration-and-metadata).
 
-### Audio
-
-WAV, MP3, OGG, FLAC, M4A and Opus files are assets like images and video: they are scanned in place, reviewed, versioned, commented, kept in history and handed off through the same paths. A small shared player (`static/audio.js`, no dependency) draws waveforms from peaks the server computes once per file and caches (WAV only; other formats play without a waveform). Players load only when visible, fetch audio only on play, and an **A / B** pair keeps the time code when you switch. Originals are served with HTTP Range so seeking works.
-
-Instrument tones, BGM and SFX are production kinds (乐器音色 / BGM / 音效). An instrument runs **音源 → 试听 → 实机**: representative clips (低音区 / 中音区 / 高音区 / 力度层, or a phrase) are the views and their takes are revisions; the confirmed set is the **听感定稿**. A sample bank is never hundreds of review items: reference it as 音源 evidence (`prod evidence --stage source --source "assets/audio/x/ · 222 WAV"`), or register the folder with use `音源库` / `SampleBank`, which keeps it browsable but never pending. Playing, MIDI, sample mapping and final mix acceptance stay in Godot and the existing tools.
-
 ### File library review
 
 Files in the 素材库 that are not yet part of an asset can still be judged one by one. **逐张审** opens it at the first pending item in the current filter (design first, archive skipped); clicking any image opens the same view.

@@ -22,7 +22,6 @@ from typing import Any, Iterable
 
 from .storage import (
     ASSET_EXTS,
-    AUDIO_EXTS,
     VIDEO_EXTS,
     _connection,
     collections,
@@ -36,7 +35,6 @@ from .storage import (
 TRASH_DIR = ".asset-review-trash"
 
 STAGES: dict[str, tuple[str, str]] = {
-    "source": ("音源", "采样库、授权与映射；按版本整体追踪，不逐个 WAV 审核"),
     "design": ("设计", "各个视图的设计稿，选定后确认为整套定稿"),
     "model": ("建模", "把设计变成三维形体"),
     "uv": ("UV", "展开模型表面，方便上贴图"),
@@ -45,13 +43,7 @@ STAGES: dict[str, tuple[str, str]] = {
     "engine": ("实机", "在游戏引擎里的真实效果"),
 }
 STAGE_ORDER = list(STAGES)
-TECH_STAGES = ("source", "model", "uv", "texture", "rig")
-AUDIO_KINDS = {"instrument", "music", "sfx"}
-# Audio assets reuse the same pipeline; only the words change.
-AUDIO_STAGE_TEXT = {
-    "design": ("试听", "代表性试听片段的各个版本，选定后确认为听感定稿"),
-    "engine": ("实机", "Godot 里的真实演奏、MIDI 与混音验收"),
-}
+TECH_STAGES = ("model", "uv", "texture", "rig")
 KINDS: dict[str, tuple[str, list[str], list[str]]] = {
     # kind: (label, default stages, suggested views)
     "environment": ("场景建筑", ["design", "model", "uv", "texture", "engine"], ["front", "side", "top", "detail"]),
@@ -60,15 +52,10 @@ KINDS: dict[str, tuple[str, list[str], list[str]]] = {
     "ui": ("界面", ["design", "engine"], ["main"]),
     "vfx": ("特效", ["design", "engine"], ["main"]),
     "2d": ("2D 美术", ["design", "engine"], ["main"]),
-    "instrument": ("乐器音色", ["source", "design", "engine"], ["low", "middle", "high", "dynamics"]),
-    "music": ("BGM", ["design", "engine"], ["full", "loop"]),
-    "sfx": ("音效", ["design", "engine"], ["main"]),
 }
 VIEW_LABELS = {
     "front": "正面", "side": "侧面", "back": "背面", "top": "俯视", "bottom": "仰视",
     "three-quarter": "斜侧", "detail": "局部细节", "main": "主图", "plan": "平面", "section": "剖面",
-    "low": "低音区", "middle": "中音区", "high": "高音区", "dynamics": "力度层", "phrase": "乐句",
-    "full": "完整曲", "loop": "循环段", "stinger": "短句",
 }
 VIEW_ALIASES = {label: key for key, label in VIEW_LABELS.items()} | {
     "正立面": "front", "立面": "front", "侧立面": "side", "顶视": "top", "俯视图": "top", "细节": "detail",
@@ -76,8 +63,6 @@ VIEW_ALIASES = {label: key for key, label in VIEW_LABELS.items()} | {
 }
 STAGE_ALIASES = {
     "design": "design", "设计": "design", "concept": "design", "views": "design",
-    "audition": "design", "试听": "design", "listen": "design",
-    "source": "source", "sources": "source", "samples": "source", "bank": "source", "音源": "source", "采样": "source",
     "model": "model", "modeling": "model", "mesh": "model", "建模": "model", "模型": "model", "blockout": "model",
     "uv": "uv", "uvs": "uv", "展uv": "uv",
     "texture": "texture", "textures": "texture", "material": "texture", "materials": "texture",
@@ -112,7 +97,7 @@ def _event(conn: Any, asset_key: str, action: str, actor: str, details: dict[str
 def _media(collection: str, rel: str) -> dict[str, Any]:
     quoted = urllib.parse.quote(rel, safe="/")
     return {
-        "media_type": "video" if Path(rel).suffix.lower() in VIDEO_EXTS else "audio" if Path(rel).suffix.lower() in AUDIO_EXTS else "image",
+        "media_type": "video" if Path(rel).suffix.lower() in VIDEO_EXTS else "image",
         "thumb": f"/asset/thumb/{collection}/{quoted}",
         "preview": f"/asset/preview/{collection}/{quoted}",
         "file": f"/asset/file/{collection}/{quoted}",
@@ -142,12 +127,6 @@ def _view_key(value: str) -> str:
         # Names like 门厅细节 get a stable key; the name stays the label.
         return "view-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]  # nosec B324 - identifier, not security
     raise ValueError(f"invalid view key: {value!r}")
-
-
-def stage_text(kind: str, stage: str) -> tuple[str, str]:
-    if kind in AUDIO_KINDS and stage in AUDIO_STAGE_TEXT:
-        return AUDIO_STAGE_TEXT[stage]
-    return STAGES.get(stage, (stage, ""))
 
 
 def _stage_list(kind: str, stages: Iterable[str] | None) -> list[str]:
@@ -883,11 +862,10 @@ def attach_evidence(
         evidence_kind = kind or (
             "timelapse" if file_row and ("timelapse" in name or "延时" in name)
             else "video" if file_row and Path(name).suffix in VIDEO_EXTS
-            else "audio" if file_row and Path(name).suffix in AUDIO_EXTS
             else "image" if file_row else "source"
         )
-        if evidence_kind not in {"image", "video", "audio", "timelapse", "source"}:
-            raise ValueError("evidence kind must be image, video, audio, timelapse or source")
+        if evidence_kind not in {"image", "video", "timelapse", "source"}:
+            raise ValueError("evidence kind must be image, video, timelapse or source")
         evidence_id = str(uuid.uuid4())
         conn.execute(
             """INSERT INTO prod_evidence(evidence_id, asset_key, stage, kind, collection, file_id, rel, sha256, source, caption, origin, created_at)
@@ -1028,9 +1006,7 @@ def discover(asset_key: str, *, actor: str = "system") -> dict[str, Any]:
             elif target[1] in stages:
                 source = safe_file(collection, row["rel"])
                 name = str(row["rel"]).lower()
-                suffix = Path(name).suffix
-                evidence_kind = ("timelapse" if ("timelapse" in name or "延时" in name) else "video" if suffix in VIDEO_EXTS
-                                 else "audio" if suffix in AUDIO_EXTS else "image")
+                evidence_kind = "timelapse" if ("timelapse" in name or "延时" in name) else ("video" if Path(name).suffix in VIDEO_EXTS else "image")
                 conn.execute(
                     """INSERT INTO prod_evidence(evidence_id, asset_key, stage, kind, collection, file_id, rel, sha256, source, caption, origin, created_at)
                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, '', '', 'discovered', ?)""",
@@ -1217,7 +1193,6 @@ def _asset_public(asset: Any) -> dict[str, Any]:
     return {
         "key": asset["asset_key"], "name": asset["name"], "project": asset["project"], "scene": asset["scene"],
         "kind": asset["kind"], "kind_label": KINDS.get(asset["kind"], (asset["kind"],))[0], "brief": asset["brief"],
-        "audio": asset["kind"] in AUDIO_KINDS,
         "stages": json.loads(asset["stages"]), "source_collection": asset["source_collection"],
         "source_prefix": asset["source_prefix"], "created_at": asset["created_at"], "updated_at": asset["updated_at"],
     }
@@ -1348,16 +1323,15 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
     all_selected = bool(required) and all(view["selected_revision_id"] or view["status"] == "single" for view in required)
     implied = {view["current"]["revision_id"] for view in required if view["status"] == "single" and view["current"]}
     lock_matches = bool(current_lock) and locked_ids == (selected_ids | implied)
-    audio = asset["kind"] in AUDIO_KINDS
     if all_selected and not lock_matches:
-        decisions.append({"type": "lock", "text": ("确认听感定稿" if audio else "确认整套设计") if not current_lock else f"更新定稿为 D{len(data['locks']) + 1}",
+        decisions.append({"type": "lock", "text": "确认整套设计" if not current_lock else f"更新定稿为 D{len(data['locks']) + 1}",
                           "detail": " · ".join(f"{v['label']} {v['current']['label']}" for v in views if v["current"] and (v["selected_revision_id"] or v["status"] == "single"))})
 
     evidence = [_evidence_payload(row) for row in data["evidence"]]
     stages = []
     for row in data["stages"]:
         key = row["stage"]
-        label, hint = stage_text(asset["kind"], key)
+        label, hint = STAGES[key]
         items = [item for item in evidence if item["stage"] == key]
         if key == "design":
             status = "accepted" if current_lock and lock_matches else ("accepted" if current_lock else ("wip" if revisions else "todo"))
@@ -1365,8 +1339,7 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
             stages.append({"stage": key, "label": label, "hint": hint, "status": status, "summary": summary, "next_step": "",
                            "accepted_at": current_lock["created_at"] if current_lock else None, "updated_at": None, "updated_by": "", "evidence": items})
             continue
-        # Source banks are audited by tooling; only stage acceptances that need the owner's eyes or ears queue.
-        if row["status"] == "ready" and key != "source":
+        if row["status"] == "ready":
             decisions.append({"type": "accept", "stage": key, "text": "实机验收" if key == "engine" else f"验收「{label}」", "detail": row["summary"] or ""})
         stages.append({"stage": key, "label": label, "hint": hint, "status": row["status"], "summary": row["summary"],
                        "next_step": row["next_step"], "accepted_at": row["accepted_at"], "updated_at": row["updated_at"],
@@ -1375,7 +1348,7 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
     stage_map = {stage["stage"]: stage for stage in stages}
     tech = [stage_map[key] for key in TECH_STAGES if key in stage_map]
     gates = {
-        "visual": {"label": "听感批准" if asset["kind"] in AUDIO_KINDS else "视觉批准", "state": "approved" if current_lock else ("progress" if revisions else "none"),
+        "visual": {"label": "视觉批准", "state": "approved" if current_lock else ("progress" if revisions else "none"),
                    "detail": f"定稿 D{current_lock['number']}" if current_lock else ("待定稿" if revisions else "未开始")},
         "tech": {"label": "技术就绪", "state": "na"} if not tech else {
             "label": "技术就绪",
@@ -1426,7 +1399,7 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
                      or next((v for v in views if v["current"] and v["current"].get("thumb")), None))
         if pick_view:
             design_pick = pick_view["current"]
-            cover = {"stage": "design", "label": stage_text(asset["kind"], "design")[0], "caption": f"{pick_view['label']} {design_pick['label']}",
+            cover = {"stage": "design", "label": "设计", "caption": f"{pick_view['label']} {design_pick['label']}",
                      **{k: design_pick[k] for k in ("thumb", "preview", "file", "media_type")}}
 
     chapters = []
@@ -1531,9 +1504,9 @@ def file_links(file_id: str) -> list[dict[str, Any]]:
         ]
         links += [
             {"type": "evidence", "asset": row["asset_key"], "asset_name": row["name"], "stage": row["stage"],
-             "label": stage_text(row["kind"], row["stage"])[0]}
+             "label": STAGES.get(row["stage"], (row["stage"],))[0]}
             for row in conn.execute(
-                "SELECT e.asset_key, e.stage, a.name, a.kind FROM prod_evidence e JOIN prod_assets a ON a.asset_key=e.asset_key WHERE e.file_id=?",
+                "SELECT e.asset_key, e.stage, a.name FROM prod_evidence e JOIN prod_assets a ON a.asset_key=e.asset_key WHERE e.file_id=?",
                 (file_id,),
             )
         ]
@@ -1553,7 +1526,7 @@ def assign_targets() -> list[dict[str, Any]]:
                                                            "revisions": numbers.get((row["asset_key"], row["view_key"]), [])})
     return [{"key": a["asset_key"], "name": a["name"], "project": a["project"], "scene": a["scene"],
              "views": views.get(a["asset_key"], []),
-             "stages": [{"stage": s, "label": stage_text(a["kind"], s)[0]} for s in json.loads(a["stages"])]} for a in assets]
+             "stages": [{"stage": s, "label": STAGES[s][0]} for s in json.loads(a["stages"])]} for a in assets]
 
 
 def source_collection(asset_key: str) -> str | None:
