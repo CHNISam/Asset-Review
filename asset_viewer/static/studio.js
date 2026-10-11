@@ -367,7 +367,7 @@ function viewCard(view, detail) {
     <figure class="view-figure">${current ? media(current, 'preview') : `<div class="view-missing"><span>＋</span><small>拖入或上传${esc(view.label)}${detail.asset.audio ? '试听片段' : '设计稿'}</small></div>`}
       ${current?.locked ? '<span class="lock-badge" title="定稿">定稿</span>' : ''}</figure>
     <div class="view-meta">
-      <div class="view-title"><strong>${esc(view.label)}</strong>${view.required ? '' : '<span class="tag">可选</span>'}</div>
+      <div class="view-title"><strong>${esc(view.label)}</strong>${view.kind === 'variant' ? '<span class="tag variant">变体</span>' : ''}${view.required ? '' : '<span class="tag">可选</span>'}${current?.previews?.length ? `<span class="tag">+${current.previews.length} 预览</span>` : ''}</div>
       <div class="view-status ${esc(view.status)}">${esc(status)}</div>
       ${chips ? `<div class="ver-row">${chips}</div>` : ''}
     </div>
@@ -444,12 +444,44 @@ const EVENT_TEXT = {
   revision_culled: d => `筛除 ${d.view} v${d.number}：${d.reason}`,
   revision_restored: d => `恢复 ${d.view} v${d.number}`,
   revision_archived: d => `清理 ${d.view} v${d.number}（可恢复）`,
+  preview_added: d => `${d.view} v${d.number} 新增预览${d.label ? `：${d.label}` : ''}`,
+  preview_removed: d => `${d.view} v${d.number} 移除一张预览`,
+  revision_reclassified: d => `重新归类 ${d.from.view} v${d.from.number} → ${d.to.view} ${d.to.preview_of ? `${d.to.preview_of.split(' ').pop()} 的预览` : (d.to.revision || '').split(' ').pop()}`,
+  revision_detached: d => `${d.view} v${d.number} 移回待归类`,
   design_locked: d => `确认定稿 D${d.number}`,
   stage_updated: d => `${(S.meta?.stages.find(s => s.stage === d.stage) || {}).label || d.stage}：${STATUS_TEXT[d.old] || d.old} → ${STATUS_TEXT[d.new] || d.new}${d.next_step ? `（${d.next_step}）` : ''}`,
   evidence_added: d => `${(S.meta?.stages.find(s => s.stage === d.stage) || {}).label || d.stage} 新增${d.kind === 'source' ? '来源' : d.kind === 'video' ? '视频' : d.kind === 'audio' ? '录音' : d.kind === 'timelapse' ? '延时' : '截图'}${d.caption ? `：${d.caption}` : ''}`,
   evidence_removed: d => `移除 ${d.stage} 证据`,
 };
 const ACTOR_TEXT = {owner: '你', agent: 'Agent', system: '自动'};
+
+// Variants ship side by side (piano / round layout); views are angles or screens of one design.
+function slotCount(detail) {
+  const variants = detail.views.filter(view => view.kind === 'variant').length;
+  const views = detail.views.length - variants;
+  return [variants ? `${variants} 个变体` : '', views ? `${views} 个视图` : ''].filter(Boolean).join(' · ') || '0 个视图';
+}
+
+function slotGroups(detail) {
+  const variants = detail.views.filter(view => view.kind === 'variant');
+  const views = detail.views.filter(view => view.kind !== 'variant');
+  const grid = items => `<div class="view-grid">${items.map(view => viewCard(view, detail)).join('')}</div>`;
+  if (!variants.length) return grid(views);
+  return `<div class="slot-group"><div class="slot-head"><strong>配置变体</strong><span>同时存在的方案，各自迭代；整套定稿同时包含它们</span></div>${grid(variants)}</div>
+    ${views.length ? `<div class="slot-group"><div class="slot-head"><strong>设计视图</strong></div>${grid(views)}</div>` : ''}`;
+}
+
+function unsortedBlock(detail) {
+  const items = detail.unsorted || [];
+  if (!items.length) return '';
+  const targets = detail.views.flatMap(view => [
+    `<option value="rev|${esc(view.view)}">${esc(view.label)} · 新版本</option>`,
+    ...view.revisions.filter(r => r.state !== 'archived').map(r => `<option value="pre|${esc(view.view)}|${r.number}">${esc(view.label)} ${esc(r.label)} · 添加为预览</option>`),
+  ]).join('');
+  return `<div class="slot-group unsorted"><div class="slot-head"><strong>待归类 ${items.length}</strong><span>没有可确定的视图/变体或版本号，不会被当成新版本，也不会被清理</span></div>
+    <div class="unsorted-grid">${items.map(item => `<figure class="unsorted-item">${media(item, 'thumb')}<figcaption><span title="${esc(item.rel)}">${esc(item.rel.split('/').pop())}</span><small>${esc(item.reason)}</small>
+      <select data-classify="${esc(item.file_id)}" data-collection="${esc(item.collection)}" aria-label="归类"><option value="">归类到…</option>${targets}</select></figcaption></figure>`).join('')}</div></div>`;
+}
 
 function cleanable(detail) {
   return detail.views.some(view => view.revisions.some(r => r.state === 'culled' || (detail.lock && r.state === 'candidate' && !r.locked && !r.selected)));
@@ -484,15 +516,15 @@ function renderAsset() {
     <nav class="section-tabs" aria-label="资产内容"><a href="#design" data-scroll="design">设计</a><a href="#stages" data-scroll="stages">制作</a><a href="#making" data-scroll="making">历程</a></nav>
 
     <section class="block" id="design">
-      <div class="block-head"><h2>设计</h2><span class="muted">${viewCount} 个视图</span>
+      <div class="block-head"><h2>设计</h2><span class="muted">${slotCount(detail)}</span>
         ${detail.lock ? `<span class="lock-chip current">定稿 ${esc(detail.lock.name)} · ${esc(day(detail.lock.created_at))}</span>` : ''}
         <span class="spacer"></span>
         ${detail.decisions.some(d => d.type === 'lock') ? `<button type="button" class="button primary" data-lock>${detail.asset.audio ? '确认听感定稿' : '确认整套设计'}</button>` : ''}
         ${cleanable(detail) ? '<button type="button" class="button quiet" data-cleanup title="移到回收目录，可恢复">清理未采用</button>' : ''}
         <button type="button" class="button quiet" data-add-view>添加视图</button>
       </div>
-      ${viewCount ? `<div class="view-grid">${detail.views.map(view => viewCard(view, detail)).join('')}</div>`
-        : '<div class="empty-inline">还没有声明设计视图。按资产需要添加：正面、侧面、背面、俯视、局部细节……</div>'}
+      ${viewCount ? slotGroups(detail) : '<div class="empty-inline">还没有声明设计视图。按资产需要添加：正面、侧面、背面、俯视、局部细节……</div>'}
+      ${unsortedBlock(detail)}
     </section>
 
     <section class="block" id="stages">
@@ -521,7 +553,7 @@ function openViewer(viewKey) {
   if (!view) return;
   const candidates = view.revisions.filter(r => r.state === 'candidate');
   const start = view.revisions.find(r => r.selected) || candidates[candidates.length - 1] || view.revisions[view.revisions.length - 1];
-  S.viewer = {view: viewKey, revision: start?.revision_id || '', compare: '', mode: 'single', annotations: [], pinMode: false};
+  S.viewer = {view: viewKey, revision: start?.revision_id || '', compare: '', mode: 'single', annotations: [], pinMode: false, shot: 0};
   $('#viewStudio').classList.remove('hidden');
   document.body.classList.add('viewer-open');
   renderViewer();
@@ -550,6 +582,10 @@ function renderViewer() {
   const current = all.find(r => r.revision_id === S.viewer.revision) || shown[shown.length - 1];
   if (current) S.viewer.revision = current.revision_id;
   const other = S.viewer.compare ? all.find(r => r.revision_id === S.viewer.compare) : null;
+  const files = current ? [current, ...(current.previews || []).filter(p => p.present)] : [];
+  const shotIndex = Math.min(S.viewer.shot || 0, Math.max(files.length - 1, 0));
+  const shot = files[shotIndex] || current;
+  const variants = S.asset.views.filter(v => v.kind === 'variant');
   const audio = current?.media_type === 'audio';
   const mode = other ? (audio && S.viewer.mode === 'wipe' ? 'side' : S.viewer.mode) : 'single';
   const stage = !current ? undefined
@@ -558,12 +594,14 @@ function renderViewer() {
         : window.ARAudio.player(current)}</div>`
     : undefined;
   const visual = stage !== undefined ? stage : !current ? `<div class="vs-empty"><p>「${esc(view.label)}」还没有${S.asset.asset.audio ? '试听片段' : '设计稿'}</p><button type="button" class="button primary" data-upload-view="${esc(view.view)}">上传第一版</button></div>`
-    : mode === 'side' ? `<div class="vs-side"><figure>${media(other, 'preview')}<figcaption>${esc(other.label)}</figcaption></figure><figure>${media(current, 'preview')}<figcaption>${esc(current.label)}</figcaption></figure></div>`
+    : mode === 'side' ? `<div class="vs-side">${[other, current].sort((x, y) => x.number - y.number).map(r => `<figure>${media(r, 'preview')}<figcaption>${esc(r.label)}${r.revision_id === current.revision_id ? ' · 当前' : ''}</figcaption></figure>`).join('')}</div>`
     : mode === 'wipe' ? `<div class="vs-wipe" data-cut="${S.viewer.cut ?? 50}"><img src="${esc(current.preview)}" alt=""><img class="top" src="${esc(other.preview)}" alt=""><span class="wipe-line"></span><span class="wipe-tag left">${esc(other.label)}</span><span class="wipe-tag right">${esc(current.label)}</span></div>`
+    : shotIndex > 0 ? `<div class="vs-figure">${media(shot, 'preview', 'draggable="false"')}<span class="shot-tag">${esc(current.label)} · ${esc(shot.label || '预览')}</span></div>`
     : `<div class="vs-figure${S.viewer.pinMode ? ' pinning' : ''}">${media(current, 'preview', 'draggable="false"')}<div class="vs-pins">${pinItems()}</div></div>`;
   $('#viewStudio').innerHTML = `
     <header class="vs-bar">
-      <div class="vs-title"><span>${esc(S.asset.asset.name)}</span><strong>${esc(view.label)}</strong></div>
+      <div class="vs-title"><span>${esc(S.asset.asset.name)}${view.kind === 'variant' ? ' · 配置变体' : ''}</span><strong>${esc(view.label)}</strong></div>
+      ${view.kind === 'variant' && variants.length > 1 ? `<div class="segmented config-switch" role="group" aria-label="切换配置">${variants.map(v => `<button type="button" data-switch-slot="${esc(v.view)}" aria-pressed="${v.view === view.view}">${esc(v.label)}</button>`).join('')}</div>` : ''}
       <div class="vs-versions" role="tablist">${shown.map(r => `<button type="button" role="tab" class="vs-ver${r.revision_id === current?.revision_id ? ' active' : ''}${r.selected ? ' selected' : ''}${r.state === 'culled' ? ' culled' : ''}" data-rev="${esc(r.revision_id)}" aria-selected="${r.revision_id === current?.revision_id}">${esc(r.label)}${r.selected ? '<i class="sel-dot" title="已选用"></i>' : ''}</button>`).join('')}
         <button type="button" class="vs-ver add" data-upload-view="${esc(view.view)}" title="上传新版本">＋</button></div>
       <div class="vs-tools">
@@ -577,7 +615,8 @@ function renderViewer() {
       <section class="vs-stage" data-stage-area>${visual}</section>
       <aside class="vs-panel">${current ? viewerPanel(view, current, culled) : ''}</aside>
     </div>
-    <nav class="vs-film">${shown.map(r => `<button type="button" class="film${r.revision_id === current?.revision_id ? ' active' : ''}${r.revision_id === other?.revision_id ? ' compare' : ''}${r.state === 'culled' ? ' culled' : ''}" data-rev="${esc(r.revision_id)}" title="${esc(r.label)}">${media(r, 'thumb')}<span>${esc(r.label)}${r.note ? ` · ${esc(r.note.split(/[，,。:：]/)[0].slice(0, 14))}` : ''}${r.selected ? ' ●' : ''}</span></button>`).join('')}</nav>`;
+    <nav class="vs-film"><span class="film-label">${esc(view.label)} · 版本</span>${shown.map(r => `<button type="button" class="film${r.revision_id === current?.revision_id ? ' active' : ''}${r.revision_id === other?.revision_id ? ' compare' : ''}${r.state === 'culled' ? ' culled' : ''}" data-rev="${esc(r.revision_id)}" title="${esc(r.label)}">${media(r, 'thumb')}<span>${esc(r.label)}${r.note ? ` · ${esc(r.note.split(/[，,。:：]/)[0].slice(0, 14))}` : ''}${r.selected ? ' ●' : ''}</span></button>`).join('')}
+      ${files.length > 1 ? `<span class="film-sep"></span><span class="film-label">${esc(current.label)} · 预览 ${files.length}</span>${files.map((f, i) => `<button type="button" class="film shot${i === shotIndex ? ' active' : ''}" data-shot="${i}" title="${esc(i ? f.label : '主图')}">${media(f, 'thumb')}<span>${esc(i ? (f.label || `预览 ${i}`) : '主图')}</span></button>`).join('')}` : ''}</nav>`;
   applyStyles($('#viewStudio'));
   if (current && S.viewer.loadedFor !== current.revision_id) loadAnnotations(current).catch(console.error);
 }
@@ -591,6 +630,7 @@ function viewerPanel(view, current, culled) {
       ${isSelected ? `<span class="status-pill accepted">${current.locked ? '定稿' : '已选用'}</span>` : current.state === 'culled' ? `<span class="status-pill culled">已筛除</span>` : ''}</div>
     <p class="vs-sub">${esc(day(current.created_at))} · ${esc(ORIGIN_TEXT[current.origin] || current.origin)}${dims ? ` · ${dims}` : ''}</p>
     ${current.note ? `<p class="vs-note">${esc(current.note)}</p>` : ''}
+    <p class="vs-sub">${(current.previews || []).length ? `另有 ${current.previews.length} 张预览（状态、角度、截图），属于同一版本` : '只有主图'} · <button type="button" class="text-btn" data-upload-preview="${current.number}">添加预览</button></p>
     ${current.state === 'culled' ? `<p class="vs-reason">筛除原因：${esc(current.reason || '未说明')}</p>` : ''}
     ${current.changed ? '<p class="vs-warn">文件在加入后被改动过，定稿前请重新上传为新版本。</p>' : ''}
     <div class="vs-decide">
@@ -732,7 +772,7 @@ async function assetDialog(existing) {
   const kind = asset?.kind || 'environment';
   const kindInfo = meta.kinds.find(k => k.kind === kind);
   const scenes = [...new Set((S.overview?.scenes || []).map(group => group.scene).filter(Boolean))];
-  const views = existing ? existing.views.map(v => v.view) : kindInfo.views;
+  const views = existing ? existing.views.filter(v => v.kind !== 'variant').map(v => v.view) : kindInfo.views;
   const viewOptions = [...meta.views.map(v => ({value: v.view, label: v.label})), ...(existing ? existing.views.filter(v => !meta.views.some(m => m.view === v.view)).map(v => ({value: v.view, label: v.label})) : [])];
   const libraryCollections = meta.collections.filter(c => !S.project || (c.group || '').split('/')[0].trim() === S.project);
   const form = openDialog(`
@@ -742,6 +782,9 @@ async function assetDialog(existing) {
     <label class="field"><span>类型</span><div class="segmented wide" data-kind-pick>${meta.kinds.map(k => `<button type="button" data-kind="${esc(k.kind)}" aria-pressed="${k.kind === kind}">${esc(k.label)}</button>`).join('')}</div></label>
     <div class="field"><span>需要的设计视图 <small>按资产实际需要勾选，未勾选的不会被要求</small></span>${chipToggles('views', viewOptions, views)}
       <div class="inline-add"><input name="customView" maxlength="40" placeholder="自定义视图，如：门厅细节"><button type="button" class="button quiet" data-add-custom-view>添加</button></div></div>
+    <div class="field"><span>配置变体 <small>同时存在、各自迭代的方案，如「钢琴布局 / 数字布局」；不是版本</small></span>
+      <div class="toggles" data-chips="variants">${(existing ? existing.views.filter(v => v.kind === 'variant') : []).map(v => `<label class="toggle"><input type="checkbox" name="variants" value="${esc(v.view)}" checked><span>${esc(v.label)}</span></label>`).join('')}</div>
+      <div class="inline-add"><input name="customVariant" maxlength="40" placeholder="如：钢琴布局"><button type="button" class="button quiet" data-add-variant>添加变体</button></div></div>
     <div class="field"><span>制作阶段</span>${chipToggles('stages', meta.stages.map(s => ({value: s.stage, label: s.label, locked: s.stage === 'design'})), asset?.stages || kindInfo.stages)}</div>
     <div class="field-row"><label class="field grow"><span>素材目录</span><select name="source_collection"><option value="">暂不关联</option>${(libraryCollections.length ? libraryCollections : meta.collections).map(c => `<option value="${esc(c.slug)}"${c.slug === asset?.source_collection ? ' selected' : ''}>${esc(c.label)}</option>`).join('')}</select></label>
       <label class="field"><span>子文件夹</span><input name="source_prefix" maxlength="200" value="${esc(asset?.source_prefix || '')}" placeholder="如 music-hall"></label></div>
@@ -753,6 +796,8 @@ async function assetDialog(existing) {
       if (!name) throw new Error('请填写名称');
       const chosenKind = form.querySelector('[data-kind-pick] [aria-pressed="true"]')?.dataset.kind || 'prop';
       const chosenViews = [...form.querySelectorAll('input[name="views"]:checked')].map(input => input.value);
+      const chosenVariants = [...form.querySelectorAll('input[name="variants"]:checked')].map(input => input.value);
+      const variantLabels = Object.fromEntries([...form.querySelectorAll('input[name="variants"]')].map(input => [input.value, input.nextElementSibling.textContent]));
       const chosenStages = [...form.querySelectorAll('input[name="stages"]')].filter(input => input.checked || input.disabled).map(input => input.value);
       const labels = Object.fromEntries([...form.querySelectorAll('input[name="views"]')].map(input => [input.value, input.nextElementSibling.textContent]));
       const fields = {name, scene: form.scene.value.trim(), kind: chosenKind, brief: form.brief.value, stages: chosenStages,
@@ -762,14 +807,17 @@ async function assetDialog(existing) {
         for (const view of chosenViews.filter(v => !existing.views.some(e => e.view === v))) {
           detail = await post('/api/production/view', {action: 'add', key: asset.key, view, label: labels[view]});
         }
-        for (const view of existing.views.filter(v => !chosenViews.includes(v.view))) {
+        for (const view of chosenVariants.filter(v => !existing.views.some(e => e.view === v))) {
+          detail = await post('/api/production/view', {action: 'add', key: asset.key, view, label: variantLabels[view], kind: 'variant'});
+        }
+        for (const view of existing.views.filter(v => !chosenViews.includes(v.view) && !chosenVariants.includes(v.view))) {
           detail = await post('/api/production/view', view.revisions.length ? {action: 'update', key: asset.key, view: view.view, required: false} : {action: 'remove', key: asset.key, view: view.view});
         }
         applyDetail(detail);
         toast('已保存');
       } else {
         const detail = await post('/api/production/asset', {action: 'create', project: S.project || '我的项目', ...fields,
-          views: chosenViews.map(view => ({key: view, label: labels[view]}))});
+          views: [...chosenViews.map(view => ({key: view, label: labels[view]})), ...chosenVariants.map(view => ({key: view, label: variantLabels[view], kind: 'variant'}))]});
         await loadProjects();
         go(`#/a/${detail.asset.key}`);
         toast(`已创建 ${detail.asset.name}`);
@@ -783,6 +831,14 @@ async function assetDialog(existing) {
     const info = meta.kinds.find(k => k.kind === button.dataset.kind);
     form.querySelectorAll('input[name="views"]').forEach(input => { input.checked = info.views.includes(input.value); });
     form.querySelectorAll('input[name="stages"]').forEach(input => { if (!input.disabled) input.checked = info.stages.includes(input.value); });
+  };
+  form.querySelector('[data-add-variant]').onclick = () => {
+    const input = form.customVariant;
+    const label = input.value.trim();
+    if (!label) return;
+    const value = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || label;
+    form.querySelector('[data-chips="variants"]').insertAdjacentHTML('beforeend', `<label class="toggle"><input type="checkbox" name="variants" value="${esc(value)}" checked><span>${esc(label)}</span></label>`);
+    input.value = '';
   };
   form.querySelector('[data-add-custom-view]').onclick = () => {
     const input = form.customView;
@@ -821,12 +877,13 @@ function addViewDialog() {
     <div class="field-row"><label class="field grow"><span>名称</span><input name="label" required maxlength="60" autofocus placeholder="例如：舞台局部"></label>
       <label class="field"><span>标识</span><input name="view" maxlength="40" placeholder="如 stage-detail"></label></div>
     <label class="check-field"><input type="checkbox" name="required" checked> 定稿前必须有</label>
+    <label class="check-field"><input type="checkbox" name="variant"> 这是配置变体：与其他方案同时存在、各自迭代（如钢琴布局 / 数字布局），不是新版本</label>
     <div class="dialog-actions"><button type="button" class="button quiet" data-dialog-cancel>取消</button><button type="submit" class="button primary">添加</button></div>`,
     async form => {
       const label = form.label.value.trim();
       if (!label) throw new Error('请填写视图名称');
       const view = form.view.value.trim() || label;
-      applyDetail(await post('/api/production/view', {action: 'add', key: S.asset.asset.key, view, label, required: form.required.checked}));
+      applyDetail(await post('/api/production/view', {action: 'add', key: S.asset.asset.key, view, label, required: form.required.checked, kind: form.variant.checked ? 'variant' : 'view'}));
     });
   $('#dialog [data-preset]').onclick = event => {
     const button = event.target.closest('[data-preset-view]');
@@ -877,14 +934,16 @@ async function renderAssign(file) {
   $('#reviewStatus').classList.toggle('hidden', data.links.length > 0);
   $('#reviewQuestion').classList.toggle('hidden', data.links.length > 0);
   row.innerHTML = links ? `<span class="assign-label">已用于</span><span class="assign-links">${links}</span>`
-    : targets.length ? `<span class="assign-label">归入资产</span><select data-assign aria-label="归入资产"><option value="">选择视图或阶段…</option>${targets.map(t => `<optgroup label="${esc(t.name)}">${t.views.map(v => `<option value="view|${esc(t.key)}|${esc(v.view)}">设计 · ${esc(v.label)}（新版本）</option>`).join('')}${t.stages.filter(s => s.stage !== 'design').map(s => `<option value="stage|${esc(t.key)}|${esc(s.stage)}">${esc(s.label)} · 证据</option>`).join('')}</optgroup>`).join('')}</select>`
+    : targets.length ? `<span class="assign-label">归入资产</span><select data-assign aria-label="归入资产"><option value="">选择视图或阶段…</option>${targets.map(t => `<optgroup label="${esc(t.name)}">${t.views.map(v => `<option value="view|${esc(t.key)}|${esc(v.view)}">${esc(v.label)} · 新版本</option>${(v.revisions || []).map(n => `<option value="preview|${esc(t.key)}|${esc(v.view)}|${n}">${esc(v.label)} v${n} · 添加为预览</option>`).join('')}`).join('')}${t.stages.filter(s => s.stage !== 'design').map(s => `<option value="stage|${esc(t.key)}|${esc(s.stage)}">${esc(s.label)} · 证据</option>`).join('')}</optgroup>`).join('')}</select>`
     : '<span class="assign-label muted">新建资产后可把文件归入设计视图或制作阶段</span>';
   const select = row.querySelector('[data-assign]');
   if (select) select.onchange = async () => {
-    const [type, key, target] = select.value.split('|');
+    const [type, key, target, number] = select.value.split('|');
     if (!key) return;
     try {
-      const payload = type === 'view'
+      const payload = type === 'preview'
+        ? await post('/api/production/preview', {action: 'attach', key, view: target, number: Number(number), collection: file.collection, file_id: file.asset_id})
+        : type === 'view'
         ? await post('/api/production/revision', {action: 'attach', key, view: target, collection: file.collection, file_id: file.asset_id})
         : await post('/api/production/evidence', {action: 'attach', key, stage: target, collection: file.collection, file_id: file.asset_id});
       const name = payload.asset.name;
@@ -969,8 +1028,18 @@ document.addEventListener('click', event => {
   }
   // View studio
   if (target.closest('[data-close-viewer]')) { leaveViewer(); return; }
+  const shotButton = target.closest('[data-shot]');
+  if (shotButton && S.viewer) { S.viewer.shot = Number(shotButton.dataset.shot); renderViewer(); return; }
+  const switchSlot = target.closest('[data-switch-slot]');
+  if (switchSlot && S.asset) { go(`#/a/${S.asset.asset.key}/v/${switchSlot.dataset.switchSlot}`, {replace: true}); return; }
+  const uploadPreview = target.closest('[data-upload-preview]');
+  if (uploadPreview && S.viewer) {
+    pickFiles('image/*,video/*,audio/*').then(files => uploadMany(files, {view: S.viewer.view, preview_of: uploadPreview.dataset.uploadPreview})).catch(fail);
+    return;
+  }
   const rev = target.closest('[data-rev]');
   if (rev && S.viewer) {
+    S.viewer.shot = 0;
     if (event.altKey || event.shiftKey) S.viewer.compare = rev.dataset.rev === S.viewer.revision ? '' : rev.dataset.rev;
     else { S.viewer.revision = rev.dataset.rev; if (S.viewer.compare === rev.dataset.rev) S.viewer.compare = ''; }
     if (S.viewer.compare && S.viewer.mode === 'single') S.viewer.mode = 'side';
@@ -1020,6 +1089,17 @@ document.addEventListener('submit', event => {
     .then(detail => { applyDetail(detail); toast('已退回'); }).catch(fail);
 });
 
+document.addEventListener('change', event => {
+  const select = event.target.closest?.('[data-classify]');
+  if (!select || !select.value || !S.asset) return;
+  const [type, view, number] = select.value.split('|');
+  const payload = {key: S.asset.asset.key, view, collection: select.dataset.collection, file_id: select.dataset.classify};
+  (type === 'pre'
+    ? post('/api/production/preview', {...payload, action: 'attach', number: Number(number)})
+    : post('/api/production/revision', {...payload, action: 'attach'}))
+    .then(() => loadAsset(S.asset.asset.key)).then(() => toast(type === 'pre' ? '已添加为预览' : '已作为新版本加入')).catch(fail);
+});
+
 document.addEventListener('input', event => {
   if (event.target.matches('#viewStudio [data-comment]')) saveComment(event.target);
   if (event.target.matches('#viewStudio [data-compare-pick]')) {
@@ -1064,12 +1144,12 @@ async function uploadMany(files, target) {
   }
   if (detail) {
     applyDetail(detail);
-    if (target.view && S.viewer) {
+    if (target.view && S.viewer && target.preview_of === undefined) {
       const view = detail.views.find(v => v.view === target.view);
       const latest = view?.revisions[view.revisions.length - 1];
       if (latest) { S.viewer.revision = latest.revision_id; renderViewer(); }
     }
-    toast(target.view ? '新版本已加入' : `已添加 ${files.length} 项证据`);
+    toast(target.preview_of !== undefined ? `已为 v${target.preview_of} 添加 ${files.length} 张预览` : target.view ? '新版本已加入' : `已添加 ${files.length} 项证据`);
   }
 }
 

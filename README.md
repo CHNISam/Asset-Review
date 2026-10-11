@@ -49,13 +49,30 @@ Later **stages** follow the asset's own pipeline: 设计 → 建模 → UV → �
 
 ![Front view: three revisions, side-by-side compare, select, annotate](docs/studio-view-versions.png)
 
-Put files in the asset folder and they appear on their own:
+Five words, five things:
+
+| | Is | Example |
+|---|---|---|
+| **Asset** | what you are making | 演奏键位 UI |
+| **Variant** | a configuration that ships side by side with others | 钢琴布局 / 数字圆形布局 |
+| **View** | an angle or screen of one design | 正面 / 侧面 |
+| **Revision** | a real iteration of one variant or view | 钢琴布局 v1 → v2 |
+| **Preview** | another screenshot, angle, state or clip *of one revision* | v2 · 收起状态 |
+| **Design lock** | one revision per required variant/view, with all its previews | D2 = 钢琴 v2 + 圆形 v1 |
+
+Variants and views are both *slots*; each iterates on its own and a lock may mix revisions from different rounds. Switching variants is switching configuration; only revisions of the same slot are compared. Input layout, camera angle, interaction state, file count or upload order never make a version.
+
+Files in the asset folder are classified from facts only:
 
 ```text
-<collection>/<asset>/design/front/front_v3.png   → front view, revision v3
-<collection>/<asset>/design/side_v1.png          → side view, revision v1
-<collection>/<asset>/model|uv|texture|rig|engine/ → evidence for that stage
+<asset>/design/<slot>/v3/<any files>        → revision v3 of <slot>; first file primary, the rest its previews
+<asset>/design/<slot>/<name>_v3*.png        → files sharing v3 form one revision with previews
+<asset>/design/<slot>_v1.png                → revision v1
+<asset>/design/<slot>/<no version>.png      → 待归类 (unsorted): never a new version, never cleaned up
+<asset>/model|uv|texture|rig|engine|source/ → evidence for that stage
 ```
+
+Unsorted files wait on the asset page until someone files them as a new revision or as a preview of vN (`prod attach --preview-of N`). Data filed under the old "every file is a new version" rule is corrected with `prod move <revision> --slot <variant> [--preview-of N]`, which keeps the file, hash, comments, annotations, history and existing locks; selected or locked revisions are refused until the owner re-decides.
 
 Obvious junk (names with `tmp`/`draft`/`wip`/草稿, images under 256 px, byte-identical repeats) is culled automatically with a reason and stays restorable. **待决定** lists only owner decisions: choosing a revision, confirming the set, accepting a stage. **清理未采用** parks culled and unchosen revisions in `<collection>/.asset-review-trash/` with their record kept; locked, selected, approved and evidence files are never touched.
 
@@ -71,7 +88,10 @@ The asset page ends with a **making-of**: one chapter per stage with the real me
 ```powershell
 asset-viewer prod create --project "Example Game" --name 音乐厅 --key music-hall --kind environment `
   --view front --view side --view top --view "detail?" --collection example-art --prefix music-hall
-asset-viewer prod show music-hall                  # views, revisions, gates, next step
+asset-viewer prod create --project "Nameless Reach" --name 演奏键位UI --key perform-keys --kind ui `
+  --variant piano:钢琴布局 --variant round:数字圆形布局 --collection ui-art --prefix perform-keys
+asset-viewer prod attach perform-keys --slot round --collection ui-art --rel shots/round-hover.png --preview-of 1
+asset-viewer prod show music-hall                  # compact: slots, revisions (+previews), lock, next step
 asset-viewer prod lock music-hall --output lock.json   # verified design lock; empty until the owner locks
 asset-viewer prod stage music-hall model --status ready --summary "18.4k tris"
 asset-viewer prod evidence music-hall --stage texture --source "art/hall.spp" --caption "Substance file"

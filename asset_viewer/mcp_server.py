@@ -164,9 +164,9 @@ def refresh_collections(collection: str | None = None) -> dict[str, Any]:
 
 
 def get_production_asset(asset: str) -> dict[str, Any]:
-    """Read one production asset: views, revisions, design lock, stages, next step."""
+    """Compact view of one asset: slots (views/variants) with revisions and previews, lock, next step, stages."""
     production.discover(asset, actor="agent")
-    return production.asset_detail(asset)
+    return production.agent_view(asset)
 
 
 def get_design_lock(asset: str) -> dict[str, Any]:
@@ -174,10 +174,26 @@ def get_design_lock(asset: str) -> dict[str, Any]:
     return production.design_lock(asset)
 
 
-def attach_design_revision(asset: str, view: str, collection: str, rel: str, note: str = "") -> dict[str, Any]:
-    """Attach a catalog file as the next revision of one design view (v1, v2 ...)."""
+def attach_design_revision(asset: str, view: str, collection: str, rel: str, note: str = "", number: int | None = None) -> dict[str, Any]:
+    """Attach a file as a NEW revision of one slot. Only for a real iteration; use attach_preview for more shots of the same revision."""
     _scan(collection)
-    return production.attach_revision(asset, view, collection, rel=rel, note=note, origin="agent", actor="agent")
+    return production.attach_revision(asset, view, collection, rel=rel, note=note, number=number, origin="agent", actor="agent")
+
+
+def attach_preview(asset: str, view: str, number: int, collection: str, rel: str, label: str = "") -> dict[str, Any]:
+    """Attach another screenshot/angle/state/clip to revision vN of a slot. Never creates a version."""
+    _scan(collection)
+    return production.attach_preview(asset, view, number, collection, rel=rel, label=label, actor="agent")
+
+
+def reclassify_revision(revision_id: str, view: str, asset: str | None = None, preview_of: int | None = None) -> dict[str, Any]:
+    """Fix a misclassified revision: move it to another slot/asset, or make it a preview of vN. Refused if selected or locked."""
+    return production.move_revision(revision_id, view=view, asset=asset, preview_of=preview_of, actor="agent")
+
+
+def list_unsorted(asset: str) -> list[dict[str, Any]]:
+    """Files in the asset folder whose slot or version is not a known fact (待归类)."""
+    return [{k: item[k] for k in ("rel", "reason", "collection")} for item in production.unsorted_files(asset)]
 
 
 def attach_stage_evidence(
@@ -224,6 +240,9 @@ def create_mcp_server():
     server.tool()(get_production_asset)
     server.tool()(get_design_lock)
     server.tool()(attach_design_revision)
+    server.tool()(attach_preview)
+    server.tool()(reclassify_revision)
+    server.tool()(list_unsorted)
     server.tool()(attach_stage_evidence)
     server.tool()(report_stage_progress)
     server.tool()(cull_revision)

@@ -10,7 +10,10 @@ When the work is a game asset rather than a loose batch of images:
 2. Deliver design revisions into `<prefix>/design/<view>/` (or `<prefix>/design/<view>_vN.png`) and run `asset-viewer prod discover music-hall`. Obvious drafts are culled automatically; cull more with `prod cull <revision_id> --reason ...`.
 3. Wait for the owner to select revisions and lock the design. Build only from `asset-viewer prod lock music-hall`: it returns the verified files (path, sha256, notes, annotations). If `locked` is false or `verified` is false, stop and say so.
 4. Put model, UV, texture, rig and engine evidence in `<prefix>/<stage>/`, or attach a source reference with `prod evidence --source`. Report `prod stage <asset> <stage> --status wip|ready --summary ... --next ...`.
-5. Never accept a stage, select a revision, lock a design or clean up files. Those are owner decisions in the browser, and the CLI and MCP tools do not offer them.
+5. Variants vs. versions: configurations that exist side by side (piano / round key layout, skins) are **variants** (`--variant` slots), never v1 / v2 of each other. A new revision needs an explicit vN (folder `design/<slot>/v3/` or `_v3` in the name) or an explicit `prod attach` without `--preview-of`. More screenshots, angles, states or clips of the same revision go in with `--preview-of N`. When the slot or version is not a known fact, leave the file in 待归类 (`prod unsorted`) instead of guessing. Fix earlier misfiling with `prod move` / `prod detach`.
+6. Read the build input from `prod lock <asset>`: every required variant and view, each with `files` (primary plus previews, path and sha256). Do not pick "the latest upload".
+7. Keep calls cheap: `prod show` prints a few lines, `prod show --json` and `prod lock` print compact JSON (`--pretty` only when a human reads it).
+8. Never accept a stage, select a revision, lock a design or clean up files. Those are owner decisions in the browser, and the CLI and MCP tools do not offer them.
 
 ## Recommended contract
 

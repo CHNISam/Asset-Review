@@ -398,8 +398,24 @@ def _ensure_production_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_prod_events_asset ON prod_events(asset_key, id);
+        CREATE TABLE IF NOT EXISTS prod_previews (
+            preview_id TEXT PRIMARY KEY,
+            revision_id TEXT NOT NULL,
+            collection TEXT NOT NULL,
+            file_id TEXT NOT NULL UNIQUE,
+            rel TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            sort INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prod_previews_revision ON prod_previews(revision_id, sort);
         """
     )
+    # A slot is a design view (angle, screen) or a variant (configurations that exist side by side).
+    view_columns = {row["name"] for row in conn.execute("PRAGMA table_info(prod_views)")}
+    if "kind" not in view_columns:
+        conn.execute("ALTER TABLE prod_views ADD COLUMN kind TEXT NOT NULL DEFAULT 'view' CHECK(kind IN ('view', 'variant'))")
 
 
 def _migrate_legacy_reviews(conn: sqlite3.Connection) -> None:

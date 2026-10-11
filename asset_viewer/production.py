@@ -87,6 +87,9 @@ STAGE_ALIASES = {
     "ingame": "engine", "实机": "engine", "引擎": "engine",
 }
 AGENT_STAGE_STATUSES = {"todo", "wip", "ready"}
+# A slot is what a design lock picks one revision for: a view (angle, screen) or a
+# variant (configurations that ship side by side, e.g. piano vs. round key layout).
+SLOT_KINDS = {"view", "variant"}
 OWNER_STAGE_STATUSES = {"accepted", "wip"}
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _VERSION_RE = re.compile(r"(?:^|[\W_])v(\d{1,3})(?=[\W_]|$)", re.IGNORECASE)
@@ -234,7 +237,10 @@ def create_asset(
         spec = {"key": view} if isinstance(view, str) else dict(view)
         view_key = _view_key(spec.get("key") or spec.get("label") or "")
         label = _clean_text(spec.get("label") or VIEW_LABELS.get(view_key, view_key), "view label", 60)
-        view_rows.append((view_key, label, 1 if spec.get("required", True) else 0, index))
+        slot_kind = spec.get("kind") or "view"
+        if slot_kind not in SLOT_KINDS:
+            raise ValueError("slot kind must be view or variant")
+        view_rows.append((view_key, label, 1 if spec.get("required", True) else 0, index, slot_kind))
     if len({row[0] for row in view_rows}) != len(view_rows):
         raise ValueError("view keys must be unique")
     now = utc_now()
@@ -260,7 +266,7 @@ def create_asset(
              json.dumps(stage_list), source_collection, prefix, sort, now, now),
         )
         conn.executemany(
-            "INSERT INTO prod_views(asset_key, view_key, label, required, sort) VALUES(?, ?, ?, ?, ?)",
+            "INSERT INTO prod_views(asset_key, view_key, label, required, sort, kind) VALUES(?, ?, ?, ?, ?, ?)",
             [(asset_key, *row) for row in view_rows],
         )
         _event(conn, asset_key, "asset_created", actor, {"name": name, "views": [row[0] for row in view_rows]}, now)
@@ -314,9 +320,12 @@ def update_asset(asset_key: str, *, actor: str = "agent", **fields: Any) -> dict
     return asset_detail(asset_key)
 
 
-def add_view(asset_key: str, view_key: str, label: str | None = None, *, required: bool = True, actor: str = "agent") -> dict[str, Any]:
+def add_view(asset_key: str, view_key: str, label: str | None = None, *, required: bool = True, kind: str = "view",
+             actor: str = "agent") -> dict[str, Any]:
     key = _view_key(view_key)
     clean = _clean_text(label or VIEW_LABELS.get(key, key), "view label", 60)
+    if kind not in SLOT_KINDS:
+        raise ValueError("slot kind must be view or variant")
     now = utc_now()
     with _connection() as conn:
         _asset_row(conn, asset_key)
@@ -324,23 +333,29 @@ def add_view(asset_key: str, view_key: str, label: str | None = None, *, require
             raise ValueError(f"view already exists: {key}")
         sort = conn.execute("SELECT COALESCE(MAX(sort), -1) + 1 AS n FROM prod_views WHERE asset_key=?", (asset_key,)).fetchone()["n"]
         conn.execute(
-            "INSERT INTO prod_views(asset_key, view_key, label, required, sort) VALUES(?, ?, ?, ?, ?)",
-            (asset_key, key, clean, int(bool(required)), sort),
+            "INSERT INTO prod_views(asset_key, view_key, label, required, sort, kind) VALUES(?, ?, ?, ?, ?, ?)",
+            (asset_key, key, clean, int(bool(required)), sort, kind),
         )
-        _event(conn, asset_key, "view_added", actor, {"view": key, "label": clean, "required": bool(required)}, now)
+        _event(conn, asset_key, "view_added", actor, {"view": key, "label": clean, "required": bool(required), "kind": kind}, now)
     return asset_detail(asset_key)
 
 
-def update_view(asset_key: str, view_key: str, *, label: str | None = None, required: bool | None = None, actor: str = "agent") -> dict[str, Any]:
+def update_view(asset_key: str, view_key: str, *, label: str | None = None, required: bool | None = None,
+                kind: str | None = None, actor: str = "agent") -> dict[str, Any]:
     now = utc_now()
     with _connection() as conn:
         row = conn.execute("SELECT * FROM prod_views WHERE asset_key=? AND view_key=?", (asset_key, view_key)).fetchone()
         if not row:
             raise ValueError(f"view not found: {view_key}")
+        if kind is not None and kind not in SLOT_KINDS:
+            raise ValueError("slot kind must be view or variant")
         new_label = _clean_text(label, "view label", 60) if label is not None else row["label"]
         new_required = int(bool(required)) if required is not None else row["required"]
-        conn.execute("UPDATE prod_views SET label=?, required=? WHERE asset_key=? AND view_key=?", (new_label or row["label"], new_required, asset_key, view_key))
-        _event(conn, asset_key, "view_updated", actor, {"view": view_key, "label": new_label, "required": bool(new_required)}, now)
+        new_kind = kind or row["kind"]
+        conn.execute("UPDATE prod_views SET label=?, required=?, kind=? WHERE asset_key=? AND view_key=?",
+                     (new_label or row["label"], new_required, new_kind, asset_key, view_key))
+        _event(conn, asset_key, "view_updated", actor,
+               {"view": view_key, "label": new_label, "required": bool(new_required), "kind": new_kind}, now)
     return asset_detail(asset_key)
 
 
@@ -358,24 +373,44 @@ def remove_view(asset_key: str, view_key: str, *, actor: str = "owner") -> dict[
 
 # --------------------------------------------------------------------------- revisions
 
-def _insert_revision(conn: Any, asset_key: str, view_key: str, file_row: Any, *, note: str, origin: str, now: str, actor: str) -> dict[str, Any]:
-    if conn.execute("SELECT 1 FROM prod_revisions WHERE file_id=? AND state<>'archived'", (file_row["asset_id"],)).fetchone():
-        raise ValueError("this file is already a revision")
-    if conn.execute("SELECT 1 FROM prod_evidence WHERE file_id=?", (file_row["asset_id"],)).fetchone():
-        raise ValueError("this file is already stage evidence")
+def _file_use(conn: Any, file_id: str) -> str:
+    """Where a file is already linked; a file belongs to exactly one place."""
+    if conn.execute("SELECT 1 FROM prod_revisions WHERE file_id=? AND state<>'archived'", (file_id,)).fetchone():
+        return "this file is already a revision"
+    if conn.execute("SELECT 1 FROM prod_previews WHERE file_id=?", (file_id,)).fetchone():
+        return "this file is already a preview"
+    if conn.execute("SELECT 1 FROM prod_evidence WHERE file_id=?", (file_id,)).fetchone():
+        return "this file is already stage evidence"
+    return ""
+
+
+def _file_sha(file_row: Any) -> str:
     source = safe_file(file_row["collection"], file_row["rel"])
     if not source:
         raise ValueError("file is unavailable")
-    sha256 = file_sha256(source)
-    siblings = {
-        row["sha256"]: int(row["number"])
-        for row in conn.execute("SELECT sha256, number FROM prod_revisions WHERE asset_key=? AND view_key=?", (asset_key, view_key))
-    }
-    used = {int(n) for n in siblings.values()} | {
-        int(row["number"]) for row in conn.execute("SELECT number FROM prod_revisions WHERE asset_key=? AND view_key=?", (asset_key, view_key))
-    }
-    wanted = _parse_version(file_row["rel"])
-    number = wanted if wanted and wanted not in used else (max(used) + 1 if used else 1)
+    return file_sha256(source)
+
+
+def _insert_revision(conn: Any, asset_key: str, view_key: str, file_row: Any, *, number: int | None, note: str,
+                     origin: str, now: str, actor: str) -> dict[str, Any]:
+    """A revision exists only by explicit intent: a given number, a vN in the name, or 'add as new revision'."""
+    used_by = _file_use(conn, file_row["asset_id"])
+    if used_by:
+        raise ValueError(used_by)
+    sha256 = _file_sha(file_row)
+    rows = conn.execute("SELECT number, sha256 FROM prod_revisions WHERE asset_key=? AND view_key=?", (asset_key, view_key)).fetchall()
+    used = {int(row["number"]) for row in rows}
+    if number is None:
+        wanted = _parse_version(file_row["rel"])
+        number = wanted if wanted and wanted not in used else (max(used) + 1 if used else 1)
+    elif number in used:
+        raise ValueError(f"v{number} already exists for {view_key}; add the file as a preview of v{number} instead")
+    siblings = {row["sha256"]: int(row["number"]) for row in rows}
+    for row in conn.execute(
+        "SELECT p.sha256, r.number FROM prod_previews p JOIN prod_revisions r ON r.revision_id=p.revision_id WHERE r.asset_key=? AND r.view_key=?",
+        (asset_key, view_key),
+    ):
+        siblings.setdefault(row["sha256"], int(row["number"]))
     reason = _triage(file_row["rel"], int(file_row["width"] or 0), int(file_row["height"] or 0), sha256, siblings)
     revision_id = str(uuid.uuid4())
     conn.execute(
@@ -388,19 +423,158 @@ def _insert_revision(conn: Any, asset_key: str, view_key: str, file_row: Any, *,
     return {"revision_id": revision_id, "view": view_key, "number": number, "culled": reason}
 
 
+def _insert_preview(conn: Any, revision: Any, file_row: Any, *, label: str, now: str, actor: str) -> dict[str, Any]:
+    used_by = _file_use(conn, file_row["asset_id"])
+    if used_by:
+        raise ValueError(used_by)
+    sha256 = _file_sha(file_row)
+    sort = conn.execute("SELECT COALESCE(MAX(sort), 0) + 1 AS n FROM prod_previews WHERE revision_id=?", (revision["revision_id"],)).fetchone()["n"]
+    preview_id = str(uuid.uuid4())
+    conn.execute(
+        """INSERT INTO prod_previews(preview_id, revision_id, collection, file_id, rel, sha256, label, sort, created_at)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (preview_id, revision["revision_id"], file_row["collection"], file_row["asset_id"], file_row["rel"], sha256,
+         _clean_text(label, "label", 120), sort, now),
+    )
+    _event(conn, revision["asset_key"], "preview_added", actor,
+           {"view": revision["view_key"], "number": revision["number"], "rel": file_row["rel"], "label": label}, now)
+    return {"preview_id": preview_id, "revision_id": revision["revision_id"], "view": revision["view_key"], "number": int(revision["number"])}
+
+
+def _preview_label(rel: str, view_key: str) -> str:
+    stem = _VERSION_RE.sub(" ", Path(rel).stem).strip(" _-")
+    stem = re.sub(r"(?i)^" + re.escape(view_key) + r"[\s_\-]*", "", stem)
+    return stem.strip(" _-") or Path(rel).stem
+
+
+def _revision_by_number(conn: Any, asset_key: str, view_key: str, number: int) -> Any:
+    row = conn.execute(
+        "SELECT * FROM prod_revisions WHERE asset_key=? AND view_key=? AND number=? AND state<>'archived'",
+        (asset_key, view_key, number),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"{view_key} v{number} not found")
+    return row
+
+
 def attach_revision(
     asset_key: str, view_key: str, collection: str, *, rel: str | None = None, file_id: str | None = None,
-    note: str = "", origin: str = "linked", actor: str = "agent",
+    note: str = "", origin: str = "linked", actor: str = "agent", number: int | None = None,
 ) -> dict[str, Any]:
+    """Add a file as a new revision of one slot (explicit intent)."""
     now = utc_now()
     with _connection() as conn:
         _asset_row(conn, asset_key)
         if not conn.execute("SELECT 1 FROM prod_views WHERE asset_key=? AND view_key=?", (asset_key, view_key)).fetchone():
             raise ValueError(f"view not found: {view_key}")
         file_row = _catalog_row(conn, collection, rel, file_id)
-        result = _insert_revision(conn, asset_key, view_key, file_row, note=_clean_text(note, "note"), origin=origin, now=now, actor=actor)
+        result = _insert_revision(conn, asset_key, view_key, file_row, number=number, note=_clean_text(note, "note"),
+                                  origin=origin, now=now, actor=actor)
         conn.execute("UPDATE prod_assets SET updated_at=? WHERE asset_key=?", (now, asset_key))
     return result
+
+
+def attach_preview(
+    asset_key: str, view_key: str, number: int, collection: str, *, rel: str | None = None, file_id: str | None = None,
+    label: str = "", actor: str = "agent",
+) -> dict[str, Any]:
+    """Add another screenshot, angle, state or clip to an existing revision. Never creates a version."""
+    now = utc_now()
+    with _connection() as conn:
+        revision = _revision_by_number(conn, asset_key, view_key, int(number))
+        file_row = _catalog_row(conn, collection, rel, file_id)
+        result = _insert_preview(conn, revision, file_row, label=label or _preview_label(file_row["rel"], view_key), now=now, actor=actor)
+        conn.execute("UPDATE prod_assets SET updated_at=? WHERE asset_key=?", (now, asset_key))
+    return result
+
+
+def detach_preview(preview_id: str, *, actor: str = "owner") -> dict[str, Any]:
+    with _connection() as conn:
+        row = conn.execute(
+            """SELECT p.*, r.asset_key, r.view_key, r.number FROM prod_previews p
+               JOIN prod_revisions r ON r.revision_id=p.revision_id WHERE p.preview_id=?""",
+            (preview_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("preview not found")
+        conn.execute("DELETE FROM prod_previews WHERE preview_id=?", (preview_id,))
+        _event(conn, row["asset_key"], "preview_removed", actor, {"view": row["view_key"], "number": row["number"], "rel": row["rel"]})
+    return asset_detail(str(row["asset_key"]))
+
+
+def _decided(conn: Any, revision: Any) -> bool:
+    """Selected or in the current lock: owner decisions that reclassification must not rewrite."""
+    if conn.execute("SELECT 1 FROM prod_views WHERE selected_revision_id=?", (revision["revision_id"],)).fetchone():
+        return True
+    return revision["revision_id"] in _locked_revision_ids(conn, revision["asset_key"])
+
+
+def move_revision(
+    revision_id: str, *, view: str, asset: str | None = None, preview_of: int | None = None,
+    number: int | None = None, actor: str = "agent",
+) -> dict[str, Any]:
+    """Fix a misclassified revision: move it to another slot or asset, or turn it into a preview.
+
+    The file, its hash, comments, annotations and history stay on the same
+    catalog asset; only the production relation changes. Selected or currently
+    locked revisions are refused until the owner re-decides.
+    """
+    now = utc_now()
+    with _connection() as conn:
+        revision = conn.execute("SELECT * FROM prod_revisions WHERE revision_id=?", (revision_id,)).fetchone()
+        if not revision or revision["state"] == "archived":
+            raise ValueError("revision not found")
+        if _decided(conn, revision):
+            raise ValueError("this revision is selected or in the current lock; the owner must change that first")
+        target_asset = asset or revision["asset_key"]
+        _asset_row(conn, target_asset)
+        if not conn.execute("SELECT 1 FROM prod_views WHERE asset_key=? AND view_key=?", (target_asset, view)).fetchone():
+            raise ValueError(f"view not found: {view}")
+        source = {"asset": revision["asset_key"], "view": revision["view_key"], "number": int(revision["number"]), "rel": revision["rel"]}
+        if preview_of is not None:
+            target = _revision_by_number(conn, target_asset, view, int(preview_of))
+            if target["revision_id"] == revision_id:
+                raise ValueError("a revision cannot be a preview of itself")
+            sort = conn.execute("SELECT COALESCE(MAX(sort), 0) AS n FROM prod_previews WHERE revision_id=?", (target["revision_id"],)).fetchone()["n"]
+            conn.execute(
+                """INSERT INTO prod_previews(preview_id, revision_id, collection, file_id, rel, sha256, label, sort, created_at)
+                   VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(uuid.uuid4()), target["revision_id"], revision["collection"], revision["file_id"], revision["rel"],
+                 revision["sha256"], revision["note"] or _preview_label(revision["rel"], view), sort + 1, now),
+            )
+            conn.execute("UPDATE prod_previews SET revision_id=?, sort=sort+? WHERE revision_id=?", (target["revision_id"], sort + 1, revision_id))
+            conn.execute("DELETE FROM prod_revisions WHERE revision_id=?", (revision_id,))
+            result = {"preview_of": f"{view} v{preview_of}"}
+        else:
+            used = {int(row["number"]) for row in conn.execute(
+                "SELECT number FROM prod_revisions WHERE asset_key=? AND view_key=? AND revision_id<>?", (target_asset, view, revision_id))}
+            if number is not None and number in used:
+                raise ValueError(f"{view} v{number} already exists")
+            wanted = _parse_version(revision["rel"])
+            new_number = number or (wanted if wanted and wanted not in used else (max(used) + 1 if used else 1))
+            conn.execute("UPDATE prod_revisions SET asset_key=?, view_key=?, number=?, updated_at=? WHERE revision_id=?",
+                         (target_asset, view, new_number, now, revision_id))
+            result = {"revision": f"{view} v{new_number}"}
+        details = {"from": source, "to": {"asset": target_asset, "view": view, **result}}
+        _event(conn, source["asset"], "revision_reclassified", actor, details, now)
+        if target_asset != source["asset"]:
+            _event(conn, target_asset, "revision_reclassified", actor, details, now)
+    return {"ok": True, **details}
+
+
+def detach_revision(revision_id: str, *, actor: str = "agent") -> dict[str, Any]:
+    """Unlink a misfiled revision; its file returns to 待归类 untouched, previews included."""
+    with _connection() as conn:
+        revision = conn.execute("SELECT * FROM prod_revisions WHERE revision_id=?", (revision_id,)).fetchone()
+        if not revision or revision["state"] == "archived":
+            raise ValueError("revision not found")
+        if _decided(conn, revision):
+            raise ValueError("this revision is selected or in the current lock; the owner must change that first")
+        conn.execute("DELETE FROM prod_previews WHERE revision_id=?", (revision_id,))
+        conn.execute("DELETE FROM prod_revisions WHERE revision_id=?", (revision_id,))
+        _event(conn, revision["asset_key"], "revision_detached", actor,
+               {"view": revision["view_key"], "number": revision["number"], "rel": revision["rel"]})
+    return {"ok": True, "rel": revision["rel"]}
 
 
 def select_revision(asset_key: str, view_key: str, revision_id: str, *, actor: str = "owner") -> dict[str, Any]:
@@ -494,14 +668,26 @@ def lock_design(asset_key: str, note: str = "", *, actor: str = "owner") -> dict
                 raise ValueError(f"the selected {view['label']} file is unavailable")
             if file_sha256(source) != revision["sha256"]:
                 raise ValueError(f"the selected {view['label']} file changed since it was added; add it again as a new revision")
+            previews = []
+            for preview in conn.execute("SELECT * FROM prod_previews WHERE revision_id=? ORDER BY sort, rel", (chosen,)):
+                path = safe_file(preview["collection"], preview["rel"])
+                if not path or file_sha256(path) != preview["sha256"]:
+                    raise ValueError(f"a preview of {view['label']} v{revision['number']} is missing or changed: {preview['rel']}")
+                previews.append({"file_id": preview["file_id"], "collection": preview["collection"], "rel": preview["rel"],
+                                 "sha256": preview["sha256"], "label": preview["label"]})
             locked.append({
-                "view": view["view_key"], "label": view["label"], "required": bool(view["required"]),
+                "view": view["view_key"], "label": view["label"], "kind": view["kind"], "required": bool(view["required"]),
                 "revision_id": revision["revision_id"], "number": int(revision["number"]),
                 "collection": revision["collection"], "file_id": revision["file_id"], "rel": revision["rel"], "sha256": revision["sha256"],
+                "previews": previews,
             })
         current = conn.execute("SELECT * FROM prod_locks WHERE asset_key=? AND superseded_at IS NULL", (asset_key,)).fetchone()
-        if current and {v["revision_id"] for v in json.loads(current["views"])} == {v["revision_id"] for v in locked}:
-            raise ValueError("the design is already locked with these revisions")
+
+        def signature(views: list[dict[str, Any]]) -> set[tuple[str, frozenset[str]]]:
+            return {(v["revision_id"], frozenset(p["file_id"] for p in v.get("previews", []))) for v in views}
+
+        if current and signature(json.loads(current["views"])) == signature(locked):
+            raise ValueError("the design is already locked with these revisions and previews")
         number = conn.execute("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM prod_locks WHERE asset_key=?", (asset_key,)).fetchone()["n"]
         conn.execute("UPDATE prod_locks SET superseded_at=? WHERE asset_key=? AND superseded_at IS NULL", (now, asset_key))
         conn.execute(
@@ -540,12 +726,24 @@ def design_lock(asset_key: str) -> dict[str, Any]:
             problems.append(f"{view['view']}: file missing")
         elif file_sha256(source) != view["sha256"]:
             problems.append(f"{view['view']}: bytes changed since lock")
-        payload_views.append({
-            "view": view["view"], "label": view["label"], "required": view["required"],
+        files = [{"role": "primary", "rel": view["rel"], "path": str(source) if source else None, "sha256": view["sha256"]}]
+        for preview in view.get("previews", []):  # locks made before previews existed simply have none
+            path = safe_file(preview["collection"], preview["rel"])
+            if not path:
+                problems.append(f"{view['view']}: preview missing {preview['rel']}")
+            elif file_sha256(path) != preview["sha256"]:
+                problems.append(f"{view['view']}: preview changed {preview['rel']}")
+            files.append({"role": "preview", "label": preview["label"], "rel": preview["rel"],
+                          "path": str(path) if path else None, "sha256": preview["sha256"]})
+        entry = {
+            "view": view["view"], "label": view["label"], "kind": view.get("kind", "view"), "required": view["required"],
             "revision": f"v{view['number']}", "revision_id": view["revision_id"],
             "collection": view["collection"], "rel": view["rel"], "path": str(source) if source else None,
-            "sha256": view["sha256"], "notes": comments.get(view["file_id"], ""), "annotations": annotations.get(view["file_id"], []),
-        })
+            "sha256": view["sha256"], "files": files, "notes": comments.get(view["file_id"], ""),
+        }
+        if annotations.get(view["file_id"]):
+            entry["annotations"] = annotations[view["file_id"]]
+        payload_views.append(entry)
     return {
         "version": 1,
         "generated_at": utc_now(),
@@ -691,100 +889,146 @@ def _source_root(asset: Any) -> tuple[str, Path, str]:
     return collection, root, str(asset["source_prefix"] or "")
 
 
-def classify(rel_in_source: str, known_views: dict[str, str]) -> tuple[str, str] | None:
-    """Map a path inside an asset folder to ('view', key) or ('stage', key)."""
+def classify(rel_in_source: str, known_views: dict[str, str]) -> tuple[Any, ...] | None:
+    """Classify a path inside an asset folder from facts only.
+
+    ('slot', key, number)    design/<slot>/v3/<file>  or  design/<slot>/<name_v3>.ext  or  design/<slot>_v3.ext
+    ('stage', key)           <model|uv|texture|rig|engine|source>/<file>
+    ('unsorted', reason)     anything else under design/: no declared slot or no explicit version
+    None                     outside the conventions (left to the library)
+    Different files or upload order never make a version on their own.
+    """
     parts = [part for part in rel_in_source.split("/") if part]
     if len(parts) < 2:
         return None
     head = STAGE_ALIASES.get(parts[0].lower(), STAGE_ALIASES.get(parts[0]))
     if head == "design":
+        def slot_of(name: str) -> str | None:
+            for candidate in (name, name.lower(), VIEW_ALIASES.get(name), VIEW_ALIASES.get(name.lower())):
+                if candidate and candidate in known_views:
+                    return known_views[candidate]
+            return None
+
         if len(parts) >= 3:
-            try:
-                return ("view", _view_key(parts[1]))
-            except ValueError:
-                return None
+            slot = slot_of(parts[1])
+            if not slot:
+                return ("unsorted", f"未声明的视图或变体「{parts[1]}」")
+            folder = re.fullmatch(r"v(\d{1,3})", parts[2], re.IGNORECASE) if len(parts) >= 4 else None
+            number = int(folder.group(1)) if folder else _parse_version(parts[-1])
+            if number is None:
+                return ("unsorted", "没有版本号（vN），不推测为新版本")
+            return ("slot", slot, number)
         stem = Path(parts[1]).stem
         token = re.split(r"[_\-\s.]v\d|[_\s.]", stem, maxsplit=1)[0]
-        for candidate in (token, token.lower()):
-            if candidate in known_views or candidate in VIEW_ALIASES:
-                return ("view", known_views.get(candidate) or VIEW_ALIASES[candidate])
-        return None
+        slot, number = slot_of(token), _parse_version(parts[1])
+        if slot and number:
+            return ("slot", slot, number)
+        return ("unsorted", "无法确定所属视图/变体或版本")
     if head in STAGES:
         return ("stage", head)
     return None
 
 
-def discover(asset_key: str, *, actor: str = "system") -> dict[str, Any]:
-    """Attach new files that follow the asset folder convention.
+def _slot_index(conn: Any, asset_key: str) -> dict[str, str]:
+    index: dict[str, str] = {}
+    for row in conn.execute("SELECT view_key, label FROM prod_views WHERE asset_key=?", (asset_key,)):
+        index[row["view_key"]] = row["view_key"]
+        index[row["label"]] = row["view_key"]
+    return index
 
-    <prefix>/design/<view>/<file>  or  <prefix>/design/<view>_v3.png   → revisions
-    <prefix>/<model|uv|texture|rig|engine>/<file>                     → stage evidence
+
+def _folder_files(conn: Any, asset: Any) -> list[tuple[Any, tuple[Any, ...]]]:
+    """Unlinked catalog files in the asset folder with their classification."""
+    collection, prefix = asset["source_collection"], str(asset["source_prefix"] or "")
+    slots = _slot_index(conn, asset["asset_key"])
+    linked = {row["file_id"] for row in conn.execute("SELECT file_id FROM prod_revisions WHERE collection=? AND state<>'archived'", (collection,))}
+    linked |= {row["file_id"] for row in conn.execute("SELECT file_id FROM prod_previews WHERE collection=?", (collection,))}
+    linked |= {row["file_id"] for row in conn.execute("SELECT file_id FROM prod_evidence WHERE collection=?", (collection,))}
+    found = []
+    for row in conn.execute("SELECT * FROM assets WHERE collection=? AND present=1 ORDER BY rel", (collection,)):
+        if row["asset_id"] in linked:
+            continue
+        rel = str(row["rel"])
+        if prefix and not rel.startswith(prefix + "/"):
+            continue
+        target = classify(rel[len(prefix) + 1:] if prefix else rel, slots)
+        if target:
+            found.append((row, target))
+    return found
+
+
+def discover(asset_key: str, *, actor: str = "system") -> dict[str, Any]:
+    """Attach new files that follow the asset folder convention; leave the rest in 待归类.
+
+    design/<slot>/v3/*            one revision v3; the first file is primary, the others its previews
+    design/<slot>/<name>_v3*.ext  files sharing v3 are one revision with previews
+    <stage>/<file>                stage evidence
     """
     added: list[dict[str, Any]] = []
     now = utc_now()
     with _connection() as conn:
         asset = _asset_row(conn, asset_key)
         if not asset["source_collection"] or not root_for(asset["source_collection"]):
-            return {"asset": asset_key, "added": []}
-        collection, prefix = asset["source_collection"], str(asset["source_prefix"] or "")
+            return {"asset": asset_key, "added": [], "unsorted": 0}
+        collection = asset["source_collection"]
         stages = set(json.loads(asset["stages"]))
-        views = {row["view_key"]: row["view_key"] for row in conn.execute("SELECT view_key, label FROM prod_views WHERE asset_key=?", (asset_key,))}
-        views |= {row["label"]: row["view_key"] for row in conn.execute("SELECT view_key, label FROM prod_views WHERE asset_key=?", (asset_key,))}
-        linked = {row["file_id"] for row in conn.execute("SELECT file_id FROM prod_revisions WHERE collection=?", (collection,))}
-        linked |= {row["file_id"] for row in conn.execute("SELECT file_id FROM prod_evidence WHERE collection=?", (collection,))}
-        rows = conn.execute(
-            "SELECT * FROM assets WHERE collection=? AND present=1 ORDER BY COALESCE(mtime_ns, 0), rel", (collection,)
-        ).fetchall()
-        candidates = []
-        for row in rows:
-            if row["asset_id"] in linked:
-                continue
-            rel = str(row["rel"])
-            if prefix:
-                if not rel.startswith(prefix + "/"):
-                    continue
-                inner = rel[len(prefix) + 1:]
-            else:
-                inner = rel
-            target = classify(inner, views)
-            if target:
-                candidates.append((target, row))
-        # Explicit vN first so numbering follows the artist's names, then by time.
-        candidates.sort(key=lambda item: (_parse_version(item[1]["rel"]) or 10_000, item[1]["mtime_ns"] or 0))
-        for (kind, key), row in candidates:
-            if kind == "view":
-                if key not in views.values():
-                    sort = conn.execute("SELECT COALESCE(MAX(sort), -1) + 1 AS n FROM prod_views WHERE asset_key=?", (asset_key,)).fetchone()["n"]
-                    inner_parts = (str(row["rel"])[len(prefix) + 1:] if prefix else str(row["rel"])).split("/")
-                    label = VIEW_LABELS.get(key) or (inner_parts[1] if len(inner_parts) >= 3 else key)
-                    conn.execute(
-                        "INSERT INTO prod_views(asset_key, view_key, label, required, sort) VALUES(?, ?, ?, 0, ?)",
-                        (asset_key, key, label[:60], sort),
-                    )
-                    views[key] = key
-                    _event(conn, asset_key, "view_added", actor, {"view": key, "required": False, "discovered": True}, now)
-                added.append(_insert_revision(conn, asset_key, key, row, note="", origin="discovered", now=now, actor=actor))
-            elif key in stages:
+        groups: dict[tuple[str, int], list[Any]] = {}
+        unsorted = 0
+        for row, target in _folder_files(conn, asset):
+            if target[0] == "slot":
+                groups.setdefault((target[1], target[2]), []).append(row)
+            elif target[0] == "unsorted":
+                unsorted += 1
+            elif target[1] in stages:
                 source = safe_file(collection, row["rel"])
                 name = str(row["rel"]).lower()
                 suffix = Path(name).suffix
-                evidence_kind = "timelapse" if ("timelapse" in name or "延时" in name) else "video" if suffix in VIDEO_EXTS else "audio" if suffix in AUDIO_EXTS else "image"
+                evidence_kind = ("timelapse" if ("timelapse" in name or "延时" in name) else "video" if suffix in VIDEO_EXTS
+                                 else "audio" if suffix in AUDIO_EXTS else "image")
                 conn.execute(
                     """INSERT INTO prod_evidence(evidence_id, asset_key, stage, kind, collection, file_id, rel, sha256, source, caption, origin, created_at)
                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, '', '', 'discovered', ?)""",
-                    (str(uuid.uuid4()), asset_key, key, evidence_kind, collection, row["asset_id"], row["rel"],
+                    (str(uuid.uuid4()), asset_key, target[1], evidence_kind, collection, row["asset_id"], row["rel"],
                      file_sha256(source) if source else None, now),
                 )
-                if not conn.execute("SELECT 1 FROM prod_stages WHERE asset_key=? AND stage=?", (asset_key, key)).fetchone() and key != "design":
-                    conn.execute("INSERT INTO prod_stages(asset_key, stage, status, updated_by, updated_at) VALUES(?, ?, 'wip', ?, ?)", (asset_key, key, actor, now))
-                _event(conn, asset_key, "evidence_added", actor, {"stage": key, "kind": evidence_kind, "rel": row["rel"], "discovered": True}, now)
-                added.append({"stage": key, "rel": row["rel"]})
+                if target[1] != "design" and not conn.execute("SELECT 1 FROM prod_stages WHERE asset_key=? AND stage=?", (asset_key, target[1])).fetchone():
+                    conn.execute("INSERT INTO prod_stages(asset_key, stage, status, updated_by, updated_at) VALUES(?, ?, 'wip', ?, ?)",
+                                 (asset_key, target[1], actor, now))
+                _event(conn, asset_key, "evidence_added", actor, {"stage": target[1], "kind": evidence_kind, "rel": row["rel"], "discovered": True}, now)
+                added.append({"stage": target[1], "rel": row["rel"]})
+        for (slot, number), rows in sorted(groups.items()):
+            existing = conn.execute(
+                "SELECT * FROM prod_revisions WHERE asset_key=? AND view_key=? AND number=?", (asset_key, slot, number)
+            ).fetchone()
+            if existing and existing["state"] == "archived":
+                unsorted += len(rows)  # the number belongs to a cleaned-up revision; a human decides
+                continue
+            if not existing:
+                primary = rows.pop(0)
+                added.append(_insert_revision(conn, asset_key, slot, primary, number=number, note="", origin="discovered", now=now, actor=actor))
+                existing = conn.execute("SELECT * FROM prod_revisions WHERE revision_id=?", (added[-1]["revision_id"],)).fetchone()
+            for row in rows:
+                added.append(_insert_preview(conn, existing, row, label=_preview_label(row["rel"], slot), now=now, actor=actor))
         if added:
             conn.execute("UPDATE prod_assets SET updated_at=? WHERE asset_key=?", (now, asset_key))
-    return {"asset": asset_key, "added": added}
+    return {"asset": asset_key, "added": added, "unsorted": unsorted}
 
 
-def store_upload(asset_key: str, *, filename: str, data: bytes, view: str | None = None, stage: str | None = None) -> dict[str, Any]:
+def unsorted_files(asset_key: str) -> list[dict[str, Any]]:
+    """Files in the asset folder whose slot or version is not a known fact (never cleaned up)."""
+    with _connection() as conn:
+        asset = _asset_row(conn, asset_key)
+        if not asset["source_collection"] or not root_for(asset["source_collection"]):
+            return []
+        return [
+            {"collection": row["collection"], "file_id": row["asset_id"], "rel": row["rel"], "reason": target[1],
+             **_media(row["collection"], row["rel"])}
+            for row, target in _folder_files(conn, asset) if target[0] == "unsorted"
+        ][:200]
+
+
+def store_upload(asset_key: str, *, filename: str, data: bytes, view: str | None = None, stage: str | None = None,
+                 preview_of: int | None = None) -> dict[str, Any]:
     """Write an uploaded file into the asset's own folder, never over an existing file."""
     if not data:
         raise ValueError("empty upload")
@@ -800,8 +1044,14 @@ def store_upload(asset_key: str, *, filename: str, data: bytes, view: str | None
             if not conn.execute("SELECT 1 FROM prod_views WHERE asset_key=? AND view_key=?", (asset_key, view)).fetchone():
                 raise ValueError(f"view not found: {view}")
             numbers = [int(row["number"]) for row in conn.execute("SELECT number FROM prod_revisions WHERE asset_key=? AND view_key=?", (asset_key, view))]
-            folder = Path(prefix, "design", view) if prefix else Path("design", view)
-            name = f"{view}_v{(max(numbers) + 1) if numbers else 1}{suffix}"
+            if preview_of is not None:
+                _revision_by_number(conn, asset_key, view, int(preview_of))
+                folder = Path(prefix, "design", view, f"v{int(preview_of)}") if prefix else Path("design", view, f"v{int(preview_of)}")
+                stem = re.sub(r"[^\w\-. ]+", "_", Path(filename).stem).strip(" .") or "preview"
+                name = f"{stem[:80]}{suffix}"
+            else:
+                folder = Path(prefix, "design", view) if prefix else Path("design", view)
+                name = f"{view}_v{(max(numbers) + 1) if numbers else 1}{suffix}"
         elif stage:
             stage = STAGE_ALIASES.get(stage.lower(), stage.lower())
             if stage not in json.loads(asset["stages"]) or stage == "design":
@@ -849,6 +1099,8 @@ def cleanup_plan(asset_key: str | None = None) -> dict[str, Any]:
             ):
                 if revision["revision_id"] in protected or revision["file_id"] in evidence_files:
                     continue
+                if conn.execute("SELECT 1 FROM prod_previews WHERE revision_id=?", (revision["revision_id"],)).fetchone():
+                    continue  # previews travel with their revision; never park part of a set
                 if not revision["present"] or revision["review_status"] == "approved":
                     continue
                 if revision["state"] == "culled":
@@ -948,8 +1200,21 @@ def _load(conn: Any, asset_key: str) -> dict[str, Any]:
     events = [dict(row) | {"details": json.loads(row["details"] or "{}")} for row in conn.execute(
         "SELECT * FROM prod_events WHERE asset_key=? ORDER BY id DESC LIMIT 120", (asset_key,)
     )]
+    previews: dict[str, list[dict[str, Any]]] = {}
+    for row in conn.execute(
+        """SELECT p.*, a.rel AS current_rel, a.present AS present FROM prod_previews p
+           JOIN prod_revisions r ON r.revision_id=p.revision_id LEFT JOIN assets a ON a.asset_id=p.file_id
+           WHERE r.asset_key=? ORDER BY p.sort, p.rel""",
+        (asset_key,),
+    ):
+        rel = row["current_rel"] or row["rel"]
+        previews.setdefault(row["revision_id"], []).append({
+            "preview_id": row["preview_id"], "label": row["label"], "rel": rel, "file_id": row["file_id"],
+            "collection": row["collection"], "present": bool(row["present"]),
+            **(_media(row["collection"], rel) if row["present"] else {}),
+        })
     return {"asset": asset, "views": views, "revisions": revisions, "locks": locks, "evidence": evidence,
-            "stages": _stage_rows(conn, asset), "events": events}
+            "stages": _stage_rows(conn, asset), "events": events, "previews": previews}
 
 
 def _revision_payload(row: dict[str, Any], selected: set[str], locked: set[str]) -> dict[str, Any]:
@@ -983,7 +1248,8 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
     current_lock = next((lock for lock in reversed(data["locks"]) if not lock["superseded_at"]), None)
     locked_ids = {view["revision_id"] for view in current_lock["views"]} if current_lock else set()
     selected_ids = {view["selected_revision_id"] for view in data["views"] if view["selected_revision_id"]}
-    revisions = [_revision_payload(row, selected_ids, locked_ids) for row in data["revisions"]]
+    revisions = [_revision_payload(row, selected_ids, locked_ids) | {"previews": data["previews"].get(row["revision_id"], [])}
+                 for row in data["revisions"]]
     by_view: dict[str, list[dict[str, Any]]] = {}
     for revision in revisions:
         by_view.setdefault(revision["view"], []).append(revision)
@@ -1015,7 +1281,7 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
             status = "updated"
             decisions.append({"type": "select", "view": view["view_key"], "text": f"「{view['label']}」有新版本 {newer[-1]['label']}", "detail": f"当前选用 {selected['label']}" if selected else ""})
         views.append({
-            "view": view["view_key"], "label": view["label"], "required": bool(view["required"]), "status": status,
+            "view": view["view_key"], "label": view["label"], "kind": view["kind"], "required": bool(view["required"]), "status": status,
             "selected_revision_id": view["selected_revision_id"], "selected_at": view["selected_at"],
             "revisions": [item for item in items if item["state"] != "archived"],
             "culled": sum(1 for item in items if item["state"] == "culled"),
@@ -1152,6 +1418,30 @@ def asset_detail(asset_key: str) -> dict[str, Any]:
     return _compose(data)
 
 
+def agent_view(asset_key: str) -> dict[str, Any]:
+    """What an agent needs to act, without media URLs, events or making-of (few tokens)."""
+    detail = asset_detail(asset_key)
+    slots = []
+    for view in detail["views"]:
+        slots.append({
+            "slot": view["view"], "label": view["label"], "kind": view["kind"], "required": view["required"], "status": view["status"],
+            "revisions": [
+                {"v": r["number"], "id": r["revision_id"], "state": r["state"], "selected": r["selected"], "locked": r["locked"],
+                 "rel": r["rel"], "previews": [p["rel"] for p in r["previews"]], **({"note": r["note"]} if r["note"] else {})}
+                for r in view["revisions"]
+            ],
+        })
+    return {
+        "asset": {k: detail["asset"][k] for k in ("key", "name", "project", "scene", "kind", "stages", "source_collection", "source_prefix")},
+        "lock": detail["lock"]["name"] if detail["lock"] else None,
+        "next": detail["next"]["text"],
+        "decisions": [d["text"] for d in detail["decisions"]],
+        "slots": slots,
+        "stages": [{"stage": s["stage"], "status": s["status"], "evidence": len(s["evidence"])} for s in detail["stages"]],
+        "unsorted": len(unsorted_files(asset_key)),
+    }
+
+
 def asset_summary(detail: dict[str, Any]) -> dict[str, Any]:
     return {key: detail[key] for key in ("asset", "cover", "gates", "next", "decisions", "progress")} | {
         "stages": [{"stage": s["stage"], "label": s["label"], "status": s["status"]} for s in detail["stages"]],
@@ -1174,6 +1464,16 @@ def file_links(file_id: str) -> list[dict[str, Any]]:
             )
         ]
         links += [
+            {"type": "preview", "asset": row["asset_key"], "asset_name": row["name"], "view": row["view_key"],
+             "label": f"{row['label']} v{row['number']} · 预览"}
+            for row in conn.execute(
+                """SELECT r.asset_key, r.view_key, r.number, a.name, v.label FROM prod_previews p
+                   JOIN prod_revisions r ON r.revision_id=p.revision_id JOIN prod_assets a ON a.asset_key=r.asset_key
+                   LEFT JOIN prod_views v ON v.asset_key=r.asset_key AND v.view_key=r.view_key WHERE p.file_id=?""",
+                (file_id,),
+            )
+        ]
+        links += [
             {"type": "evidence", "asset": row["asset_key"], "asset_name": row["name"], "stage": row["stage"],
              "label": stage_text(row["kind"], row["stage"])[0]}
             for row in conn.execute(
@@ -1188,9 +1488,13 @@ def assign_targets() -> list[dict[str, Any]]:
     """Every asset with its views and stages, for 'add this file to ...' menus."""
     with _connection() as conn:
         assets = conn.execute("SELECT * FROM prod_assets ORDER BY project, scene, sort, name").fetchall()
+        numbers: dict[tuple[str, str], list[int]] = {}
+        for row in conn.execute("SELECT asset_key, view_key, number FROM prod_revisions WHERE state<>'archived' ORDER BY number"):
+            numbers.setdefault((row["asset_key"], row["view_key"]), []).append(int(row["number"]))
         views = {}
-        for row in conn.execute("SELECT asset_key, view_key, label FROM prod_views ORDER BY sort, view_key"):
-            views.setdefault(row["asset_key"], []).append({"view": row["view_key"], "label": row["label"]})
+        for row in conn.execute("SELECT asset_key, view_key, label, kind FROM prod_views ORDER BY sort, view_key"):
+            views.setdefault(row["asset_key"], []).append({"view": row["view_key"], "label": row["label"], "kind": row["kind"],
+                                                           "revisions": numbers.get((row["asset_key"], row["view_key"]), [])})
     return [{"key": a["asset_key"], "name": a["name"], "project": a["project"], "scene": a["scene"],
              "views": views.get(a["asset_key"], []),
              "stages": [{"stage": s, "label": stage_text(a["kind"], s)[0]} for s in json.loads(a["stages"])]} for a in assets]

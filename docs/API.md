@@ -137,7 +137,9 @@ Production assets point at catalog files by stable `asset_id`; files never move 
 - `GET /api/production/file?file_id=` — where a catalog file is used, plus assign targets
 - `GET /api/production/meta` — kinds, stages, view presets, collections
 
-Owner mutations (CSRF, same as below): `POST /api/production/asset` (`create`/`update`), `/view` (`add`/`update`/`remove`), `/select`, `/lock`, `/stage` (`accepted` or `wip` with `next_step`), `/revision` (`attach`/`cull`/`restore`), `/evidence` (`attach`/`remove`), `/cleanup`, and `POST /api/production/upload?key=&view=|stage=` with the raw file body and an `X-Filename` header. Uploads are written as the next `<view>_vN` inside the asset folder and never overwrite.
+Slots are `kind: view` or `kind: variant`; each revision carries `previews[]`; the asset response adds `unsorted[]` (files with no factual slot/version). The lock lists every chosen slot with `kind` and `files[]` (role `primary` / `preview`, path, sha256).
+
+Owner mutations (CSRF, same as below): `POST /api/production/asset` (`create`/`update`), `/view` (`add`/`update`/`remove`), `/select`, `/lock`, `/stage` (`accepted` or `wip` with `next_step`), `/revision` (`attach` with optional `number`, `cull`, `restore`, `move` to a slot/asset or `preview_of`, `detach`), `/preview` (`attach` to `view`+`number`, `remove`), `/evidence` (`attach`/`remove`), `/cleanup`, and `POST /api/production/upload?key=&view=|stage=` with the raw file body and an `X-Filename` header. Uploads are written as the next `<view>_vN` inside the asset folder and never overwrite.
 
 Agents use `asset-viewer prod …` or the MCP tools `get_production_asset`, `get_design_lock`, `attach_design_revision`, `attach_stage_evidence`, `report_stage_progress` and `cull_revision`. None of them can select, lock, accept or clean up.
 

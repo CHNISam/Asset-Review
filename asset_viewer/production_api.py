@@ -61,7 +61,7 @@ def handle_get(path: str, query_string: str) -> tuple[int, Any] | None:
             if not key:
                 return 400, {"error": "key is required"}
             _refresh(key)
-            return 200, production.asset_detail(key)
+            return 200, production.asset_detail(key) | {"unsorted": production.unsorted_files(key)}
         if route == "lock":
             key = _first(query, "key")
             if not key:
@@ -103,10 +103,12 @@ def handle_post(path: str, payload: dict[str, Any]) -> tuple[int, Any] | None:
         elif route == "view":
             view = str(payload.get("view") or "")
             if action == "add":
-                return 200, production.add_view(key, view, payload.get("label"), required=bool(payload.get("required", True)), actor="owner")
+                return 200, production.add_view(key, view, payload.get("label"), required=bool(payload.get("required", True)),
+                                                kind=str(payload.get("kind") or "view"), actor="owner")
             if action == "update":
                 required = payload.get("required")
-                return 200, production.update_view(key, view, label=payload.get("label"), required=None if required is None else bool(required), actor="owner")
+                return 200, production.update_view(key, view, label=payload.get("label"), required=None if required is None else bool(required),
+                                                   kind=payload.get("kind"), actor="owner")
             if action == "remove":
                 return 200, production.remove_view(key, view, actor="owner")
         elif route == "select":
@@ -129,8 +131,27 @@ def handle_post(path: str, payload: dict[str, Any]) -> tuple[int, Any] | None:
                 production.attach_revision(
                     key, str(payload.get("view") or ""), str(payload.get("collection") or ""),
                     rel=payload.get("rel"), file_id=payload.get("file_id"), origin="linked", actor="owner",
+                    number=int(payload["number"]) if payload.get("number") else None,
                 )
                 return 200, production.asset_detail(key)
+            if action == "move":
+                production.move_revision(
+                    revision_id, view=str(payload.get("view") or ""), asset=payload.get("asset") or None,
+                    preview_of=int(payload["preview_of"]) if payload.get("preview_of") else None, actor="owner",
+                )
+                return 200, production.asset_detail(key)
+            if action == "detach":
+                production.detach_revision(revision_id, actor="owner")
+                return 200, production.asset_detail(key)
+        elif route == "preview":
+            if action == "attach":
+                production.attach_preview(
+                    key, str(payload.get("view") or ""), int(payload.get("number") or 0), str(payload.get("collection") or ""),
+                    rel=payload.get("rel"), file_id=payload.get("file_id"), label=str(payload.get("label") or ""), actor="owner",
+                )
+                return 200, production.asset_detail(key)
+            if action == "remove":
+                return 200, production.detach_preview(str(payload.get("preview_id") or ""), actor="owner")
         elif route == "evidence":
             if action == "attach":
                 production.attach_evidence(
@@ -159,16 +180,19 @@ def handle_upload(path: str, query_string: str, filename: str, data: bytes) -> t
     query = urllib.parse.parse_qs(query_string)
     key = _first(query, "key")
     try:
+        preview_of = int(_first(query, "preview_of")) if _first(query, "preview_of") else None
         stored = production.store_upload(
             key, filename=urllib.parse.unquote(filename or ""), data=data,
-            view=_first(query, "view") or None, stage=_first(query, "stage") or None,
+            view=_first(query, "view") or None, stage=_first(query, "stage") or None, preview_of=preview_of,
         )
         from .app import scan_collection
 
         scan_collection(stored["collection"], force=True)
         view = _first(query, "view")
         stage = _first(query, "stage")
-        if view:
+        if view and preview_of is not None:
+            production.attach_preview(key, view, preview_of, stored["collection"], rel=stored["rel"], actor="owner")
+        elif view:
             production.attach_revision(key, view, stored["collection"], rel=stored["rel"], origin="uploaded", actor="owner")
         else:
             production.attach_evidence(key, stage, collection=stored["collection"], rel=stored["rel"],

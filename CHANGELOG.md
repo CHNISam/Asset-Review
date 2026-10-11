@@ -4,6 +4,13 @@ All notable changes to Asset Viewer will be documented here.
 
 ## Unreleased
 
+- **Variants are not versions.** Slots are now views (angles, screens) or variants (configurations that ship side by side, such as piano vs. round key layouts); each iterates on its own and a design lock picks one revision per required slot. Revisions can hold any number of previews (screenshots, angles, interaction states, clips), stored in a new `prod_previews` table; `prod_views` gains one `kind` column. Both are additive migrations.
+- Discovery uses facts only: `design/<slot>/vN/` folders or `_vN` names; files without a declared slot or explicit version stay in 待归类 and are never versioned or cleaned up. Uploads add a new revision or a preview of vN by explicit choice.
+- Locks snapshot every file of each chosen revision; `prod lock` / `get_design_lock` return all required variants with `files[]`. Locks written before this change still read and verify.
+- Correction without loss: `prod move` (to another slot/asset, or into a preview of vN) and `prod detach` keep files, hashes, comments, annotations, history and locks; decided revisions are refused.
+- Agent output is compact by default (`prod show` a few lines, JSON without indentation); MCP adds `attach_preview`, `reclassify_revision`, `list_unsorted`, and `get_production_asset` returns the compact view.
+- UI: 配置变体 group on the asset page, a configuration switch in the viewer separate from version tabs, previews strip per revision, chronological side-by-side history, 待归类 box with one-step filing.
+
 - **Audio.** WAV/MP3/OGG/FLAC/M4A/Opus join the catalog, review, comments, history, families and handoff unchanged. Waveform peaks are computed once from WAV with the standard library and cached; thumbnails are server-drawn waveforms. One shared player (`audio.js`) gives click-to-seek, one-sound-at-a-time and A/B at the same time code; it initialises only when visible and loads audio only on play. Both servers now answer HTTP Range requests, so audio and video can seek.
 - Audio production kinds 乐器音色 / BGM / 音效 with a 音源 stage; the design stage reads 试听 and the visual gate 听感批准 for them. A required view with a single candidate no longer queues a "select" decision; the lock confirms it.
 - Collections whose use is `音源库` / `SampleBank` (or `Archive`) report `review_required: false` and are never pending.
