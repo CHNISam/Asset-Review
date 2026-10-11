@@ -148,9 +148,14 @@ def main() -> None:
 
                 def switch_project(name: str) -> None:
                     page.locator("#projectSwitcher").click()
-                    page.locator(f'[data-switch-project="{name}"]').click()
+                    page.locator(f'[data-project-pick="{name}"]').click()
 
-                response = page.goto(base_url, wait_until="domcontentloaded")
+                def open_library(selector: str) -> None:
+                    page.locator(f"#collectionNav {selector}").first.click()
+                    page.locator("#libraryView").wait_for(state="visible")
+
+                # A collection link opens the file library inside the studio shell.
+                response = page.goto(f"{base_url}/c/{demo_slug}", wait_until="domcontentloaded")
                 assert response is not None and response.ok, "initial gallery request failed"
                 page.locator("#summary").wait_for(state="visible")
                 try:
@@ -164,13 +169,12 @@ def main() -> None:
                         f"{exc}; summary={summary!r}; page_errors={page_errors!r}; console_errors={console_errors!r}"
                     ) from exc
 
-                assert page.title() == "Asset Review" or page.title().endswith("· Asset Review")
+                assert page.title().endswith("素材库") or "Asset Review" in page.title(), page.title()
                 assert page.locator("#collection").input_value() == demo_slug
                 assert "Northline Coffee" in page.locator("#collectionTitle").inner_text()
-                assert page.locator("#collectionRail").is_visible()
-                assert page.locator("#tabGallery").is_visible()
-                assert page.locator("#tabActivity").is_visible()
-                assert page.locator("#tabApproved").is_visible()
+                assert page.locator("#libraryView").is_visible()
+                assert page.locator("#studioView").is_hidden()
+                assert page.locator("#tabApproved").count() == 0
                 assert page.locator("#projectSwitcher").is_visible()
                 assert page.locator("#useFilter").is_visible()
                 assert page.locator("#selectionMode").is_visible()
@@ -178,42 +182,18 @@ def main() -> None:
                 summary = (page.locator("#summary").text_content() or "").strip()
                 assert summary and summary.lower() != "loading…", summary
 
-                # A project filter must open another registered project without
-                # replacing the demo collection or starting another service.
+                # Switching project re-scopes the studio and the library together.
                 switch_project("Second Project")
+                open_library('[data-project="Second Project"]')
                 wait_until(
                     "second project gallery to load",
                     lambda: page.locator("#grid .card").count() == 1,
                 )
                 assert page.locator("#grid .card").filter(has_text="theater-reference.png").count() == 1
 
-                # The sidebar shows one project at a time; switch back the way
-                # a reviewer does, then open the collection from the sidebar.
                 switch_project("未分组")
-                page.locator(f'[data-collection="{demo_slug}"]').click()
+                open_library(f'[data-collection="{demo_slug}"]')
                 wait_until("demo gallery to return", lambda: page.locator("#grid .card").count() == 6)
-
-                # "All projects" remains an explicit scope rather than
-                # silently falling back to the active collection.  Selecting
-                # across collections keeps native review mutations disabled.
-                switch_project("__all__")
-                wait_until("all project assets to load", lambda: page.locator("#grid .card").count() == 7)
-                assert page.locator("#projectFilter").input_value() == "__all__"
-                assert page.locator("#sceneFilter").is_disabled()
-                page.locator("#selectionMode").click()
-                all_cards = page.locator("#grid .card")
-                all_cards.nth(0).click()
-                all_cards.nth(6).click()
-                wait_until(
-                    "two cross-project cards selected",
-                    lambda: (page.locator("#selectedCount").text_content() or "").startswith("2"),
-                )
-                assert not page.locator('#selectionAction option[value="approve"]').is_enabled()
-                page.locator("#clearSelection").click()
-                page.locator("#selectionMode").click()
-                switch_project("未分组")
-                page.locator(f'[data-collection="{demo_slug}"]').click()
-                wait_until("demo gallery after all-project scope", lambda: page.locator("#grid .card").count() == 6)
 
                 # In selection mode, an entire card selects rather than opens a
                 # preview. Shift selects a contiguous range and Ctrl toggles.
@@ -242,10 +222,9 @@ def main() -> None:
                 page.locator("#selectionMode").click()
                 page.locator("#bulkbar").wait_for(state="hidden")
 
-                page.locator("#tabApproved").click()
+                page.locator('#statusChips [data-status="approved"]').click()
                 wait_until("one seeded approved asset", lambda: page.locator("#grid .card").count() == 1)
-                assert page.locator("#approvedPanel").is_visible()
-                page.locator("#tabGallery").click()
+                page.locator('#statusChips [data-status="all"]').click()
                 wait_until("gallery restored", lambda: page.locator("#grid .card").count() == 6)
 
                 target_card = page.locator("#grid .card").filter(has_text="06-homepage-banner.png")
@@ -327,22 +306,13 @@ def main() -> None:
                 page.locator("#compareModal").wait_for(state="hidden")
                 page.locator("#selectionMode").click()
 
-                page.locator("#tabApproved").click()
-                wait_until("approvals appear in Approved", lambda: page.locator("#grid .card").count() == 3)
-                assert page.locator("#approvedPanel").is_visible()
-
-                page.locator("#view").select_option("activity")
-                page.locator("#activityView").wait_for(state="visible")
-                wait_until(
-                    "review event to appear in Activity",
-                    lambda: page.locator("#activityList .activity-event").count() > 0,
-                )
+                page.locator('#statusChips [data-status="approved"]').click()
+                wait_until("approvals appear under 通过", lambda: page.locator("#grid .card").count() == 3)
 
                 page.set_viewport_size({"width": 390, "height": 844})
-                page.locator("#tabGallery").click()
-                wait_until("full mobile gallery restored after Approved and Activity", lambda: page.locator("#grid .card").count() == 6)
+                page.locator('#statusChips [data-status="all"]').click()
+                wait_until("full mobile gallery restored", lambda: page.locator("#grid .card").count() == 6)
                 assert page.locator("#filter").input_value() == "all"
-                assert not page.locator("#collectionRail").is_visible()
                 assert page.locator(".mobile-collection").is_visible()
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
 

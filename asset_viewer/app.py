@@ -25,6 +25,7 @@ from . import __version__
 from .preview_worker import inspect_images_worker, render_preview_worker, render_video_poster_worker
 from .activity import activity_feed
 from .handoff import approved_handoff
+from . import production_api
 from .storage import (
     ASSET_EXTS,
     IMAGE_EXTS,
@@ -71,6 +72,7 @@ STATIC = Path(__file__).resolve().parent / "static"
 LOGGER = logging.getLogger("asset_viewer")
 BASE_CSP = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+TRASH_DIR = ".asset-review-trash"
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -143,6 +145,13 @@ def capability_document() -> dict[str, Any]:
             "smart_action_menus": True,
             "video_assets": True,
             "video_poster_thumbnails": True,
+            "production_assets": True,
+            "design_views": True,
+            "design_revisions": True,
+            "design_locks": True,
+            "production_stages": ["design", "model", "uv", "texture", "rig", "engine"],
+            "stage_evidence": True,
+            "safe_cleanup": True,
         },
         "limits": {
             "max_scan_files": MAX_SCAN_FILES,
@@ -323,7 +332,9 @@ def scan_collection(slug: str, force: bool = False) -> tuple[list[dict[str, Any]
 
     try:
         stop = False
-        for directory, _, filenames in os.walk(root, followlinks=False, onerror=walk_error):
+        for directory, dirnames, filenames in os.walk(root, followlinks=False, onerror=walk_error):
+            # Cleaned-up revisions are parked here; they are not catalog material.
+            dirnames[:] = [name for name in dirnames if name != TRASH_DIR]
             for filename in filenames:
                 if time.monotonic() - started > MAX_SCAN_SECONDS:
                     truncated, reason, stop = True, "scan_time_limit", True
@@ -619,6 +630,11 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
             return self._static("app.css", "text/css; charset=utf-8")
         if path == "/app.js":
             return self._static("app.js", "application/javascript; charset=utf-8")
+        if path == "/studio.js":
+            return self._static("studio.js", "application/javascript; charset=utf-8")
+        production = production_api.handle_get(path, parsed.query)
+        if production is not None:
+            return self._send_json(*production)
         if path == "/api/session":
             return self._send_json(200, {"csrf": getattr(self.server, "csrf_token", ""), "version": __version__})
         if path == "/api/capabilities":
@@ -775,9 +791,23 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
         if not self._csrf_valid():
             self._discard_rejected_body()
             return self._send_json(403, {"error": "CSRF validation failed"})
-        path = urllib.parse.urlparse(self.path).path
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if path == production_api.PREFIX + "upload":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = -1
+            if length <= 0 or length > production_api.production.MAX_UPLOAD_BYTES:
+                self._discard_rejected_body(length if length > 0 else 0)
+                return self._send_json(400, {"ok": False, "error": "upload size is invalid or too large"})
+            data = self.rfile.read(length)
+            return self._send_json(*production_api.handle_upload(path, parsed.query, self.headers.get("X-Filename", ""), data))
         try:
             payload = self._read_json()
+            production = production_api.handle_post(path, payload)
+            if production is not None:
+                return self._send_json(*production)
             slug = str(payload.get("collection", ""))
             if not root_for(slug):
                 raise ValueError("collection not found")

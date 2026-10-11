@@ -61,21 +61,26 @@ class AppTests(unittest.TestCase):
         self.assertIn("event.ctrlKey || event.metaKey", script)
         self.assertIn("event.key.toLowerCase() === 'k'", script)
 
-    def test_visual_redesign_projects_real_workflow_without_mockup_only_features(self):
+    def test_studio_is_organized_around_production_assets(self):
         root = Path(__file__).parents[1] / "asset_viewer" / "static"
         html = (root / "index.html").read_text(encoding="utf-8")
-        script = (root / "app.js").read_text(encoding="utf-8")
+        library = (root / "app.js").read_text(encoding="utf-8")
+        studio = (root / "studio.js").read_text(encoding="utf-8")
         css = (root / "app.css").read_text(encoding="utf-8")
-        for control_id in ("collectionRail", "collectionNav", "collectionTitle", "tabGallery", "tabActivity", "tabApproved", "approvedPanel"):
+        for control_id in ("studioView", "libraryView", "assetNav", "collectionNav", "viewStudio", "projectSwitcher", "assignRow"):
             self.assertIn(f'id="{control_id}"', html)
-        for mockup_only_copy in ("Trash", "Local Storage", "Add Assets"):
-            self.assertNotIn(mockup_only_copy, html)
-        self.assertIn("function renderWorkspaceState()", script)
-        self.assertIn("function setWorkspaceTab(tab)", script)
-        self.assertIn("$('#filter').value = 'approved';", script)
+        # The split 素材 / 记录 / 交付 entry points are gone; the asset page carries all three.
+        for retired_id in ("tabGallery", "tabActivity", "tabApproved", "approvedPanel", "activityView"):
+            self.assertNotIn(f'id="{retired_id}"', html)
+        self.assertNotIn("setWorkspaceTab", library)
+        self.assertIn('<script src="/studio.js"></script>', html)
+        for function in ("function renderAsset()", "function openViewer(", "function lockDialog()", "function makingOf(", "function renderDecide()"):
+            self.assertIn(function, studio)
+        for endpoint in ("/api/production/select", "/api/production/lock", "/api/production/stage", "/api/production/upload"):
+            self.assertIn(endpoint, studio)
         self.assertIn("object-fit:contain", css)
-        self.assertIn(".collection-rail", css)
-        self.assertIn(".content-frame.approved-mode", css)
+        self.assertIn(".view-studio", css)
+        self.assertIn(':root[data-theme="auto"]', css)
 
     def test_project_workspace_exposes_facets_and_card_selection_mode(self):
         root = Path(__file__).parents[1] / "asset_viewer" / "static"
