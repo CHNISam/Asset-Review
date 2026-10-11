@@ -416,6 +416,16 @@ def _ensure_production_schema(conn: sqlite3.Connection) -> None:
     view_columns = {row["name"] for row in conn.execute("PRAGMA table_info(prod_views)")}
     if "kind" not in view_columns:
         conn.execute("ALTER TABLE prod_views ADD COLUMN kind TEXT NOT NULL DEFAULT 'view' CHECK(kind IN ('view', 'variant'))")
+    # Within one slot, files either succeed each other (revision v1 → v2) or compete as options (方案 A / B).
+    revision_columns = {row["name"] for row in conn.execute("PRAGMA table_info(prod_revisions)")}
+    if "kind" not in revision_columns:
+        conn.execute("ALTER TABLE prod_revisions ADD COLUMN kind TEXT NOT NULL DEFAULT 'revision' CHECK(kind IN ('revision', 'option'))")
+    # Audit findings a person confirmed as intended; the audit stays quiet about them.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS prod_audit_acks (
+            asset_key TEXT NOT NULL, rule TEXT NOT NULL, subject TEXT NOT NULL, note TEXT NOT NULL DEFAULT '',
+            actor TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, PRIMARY KEY (asset_key, rule, subject))"""
+    )
 
 
 def _migrate_legacy_reviews(conn: sqlite3.Connection) -> None:

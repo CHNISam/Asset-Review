@@ -850,3 +850,19 @@ button.decision.reject.decision-active{background:var(--bad-fill);color:#fff}
 .unsorted-item small{color:var(--faint)}
 .unsorted-item select{min-height:30px;font-size:12.5px}
 .hero-media:has(.wave-player) figcaption{top:14px;bottom:auto}
+
+/* Audit: past misfiling as rules */
+.audit-box{display:grid;gap:12px;margin:0 0 24px;padding:16px 18px;border-radius:16px;background:var(--warn-soft)}
+.audit-list{display:grid;gap:10px;margin:0;padding:0;list-style:none}
+.audit-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;padding:12px 14px;border-radius:12px;background:var(--surface)}
+.audit-item.error{box-shadow:inset 3px 0 0 var(--bad-fill)}
+.audit-item.warn{box-shadow:inset 3px 0 0 var(--warn-fill)}
+.audit-copy{display:grid;gap:3px;min-width:0}
+.audit-copy strong{font-size:14px}
+.audit-copy span{color:var(--muted);font-size:13px}
+.audit-copy small{color:var(--faint);font-size:12px}
+.audit-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;max-width:520px}
+.audit-actions code{max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ack-form{display:flex;gap:6px}
+.ack-form input{width:180px;min-height:34px;padding:4px 10px}
+@media (max-width:900px){.audit-item{grid-template-columns:1fr}.audit-actions{justify-content:flex-start}}

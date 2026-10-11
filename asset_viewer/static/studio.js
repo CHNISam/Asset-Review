@@ -448,6 +448,8 @@ const EVENT_TEXT = {
   preview_removed: d => `${d.view} v${d.number} 移除一张预览`,
   revision_reclassified: d => `重新归类 ${d.from.view} v${d.from.number} → ${d.to.view} ${d.to.preview_of ? `${d.to.preview_of.split(' ').pop()} 的预览` : (d.to.revision || '').split(' ').pop()}`,
   revision_detached: d => `${d.view} v${d.number} 移回待归类`,
+  revision_kind_set: d => `${d.view} ${d.numbers.length} 项标为${d.kind === 'option' ? '备选方案' : '前后迭代'}`,
+  audit_acknowledged: d => `确认无误：${d.rule}（${d.note}）`,
   design_locked: d => `确认定稿 D${d.number}`,
   stage_updated: d => `${(S.meta?.stages.find(s => s.stage === d.stage) || {}).label || d.stage}：${STATUS_TEXT[d.old] || d.old} → ${STATUS_TEXT[d.new] || d.new}${d.next_step ? `（${d.next_step}）` : ''}`,
   evidence_added: d => `${(S.meta?.stages.find(s => s.stage === d.stage) || {}).label || d.stage} 新增${d.kind === 'source' ? '来源' : d.kind === 'video' ? '视频' : d.kind === 'audio' ? '录音' : d.kind === 'timelapse' ? '延时' : '截图'}${d.caption ? `：${d.caption}` : ''}`,
@@ -456,6 +458,20 @@ const EVENT_TEXT = {
 const ACTOR_TEXT = {owner: '你', agent: 'Agent', system: '自动'};
 
 // Variants ship side by side (piano / round layout); views are angles or screens of one design.
+// Findings from rules learned from past misfiling; fixes are explicit, nothing changes on its own.
+function auditBlock(detail) {
+  const findings = (detail.audit || []).filter(f => f.severity !== 'info' || f.rule !== 'unsorted-backlog');
+  if (!findings.length) return '';
+  return `<div class="audit-box"><div class="slot-head"><strong>需要整理 ${findings.length}</strong><span>按以往犯过的归类错误自动检查；修正只改关系，不动原文件</span></div>
+    <ol class="audit-list">${findings.map((f, i) => `<li class="audit-item ${esc(f.severity)}">
+      <div class="audit-copy"><strong>${esc(f.title)}</strong><span>${esc(f.message)}</span><small>来自：${esc(f.incident)}</small></div>
+      <div class="audit-actions">${f.fixes.map((fix, j) => fix.action === 'hint'
+        ? (fix.command ? `<code title="${esc(fix.label)}">${esc(fix.command)}</code>` : `<small>${esc(fix.label)}</small>`)
+        : fix.action === 'ack'
+          ? `<form class="ack-form" data-ack="${i}"><input name="note" required maxlength="300" placeholder="为什么这样是对的"><button class="button quiet" type="submit">${esc(fix.label)}</button></form>`
+          : `<button type="button" class="button" data-audit-fix="${i}:${j}">${esc(fix.label)}</button>`).join('')}</div></li>`).join('')}</ol></div>`;
+}
+
 function slotCount(detail) {
   const variants = detail.views.filter(view => view.kind === 'variant').length;
   const views = detail.views.length - variants;
@@ -523,6 +539,7 @@ function renderAsset() {
         ${cleanable(detail) ? '<button type="button" class="button quiet" data-cleanup title="移到回收目录，可恢复">清理未采用</button>' : ''}
         <button type="button" class="button quiet" data-add-view>添加视图</button>
       </div>
+      ${auditBlock(detail)}
       ${viewCount ? slotGroups(detail) : '<div class="empty-inline">还没有声明设计视图。按资产需要添加：正面、侧面、背面、俯视、局部细节……</div>'}
       ${unsortedBlock(detail)}
     </section>
@@ -1028,6 +1045,17 @@ document.addEventListener('click', event => {
   }
   // View studio
   if (target.closest('[data-close-viewer]')) { leaveViewer(); return; }
+  const auditFix = target.closest('[data-audit-fix]');
+  if (auditFix && S.asset) {
+    const [i, j] = auditFix.dataset.auditFix.split(':').map(Number);
+    const fix = S.asset.audit[i].fixes[j];
+    const key = S.asset.asset.key;
+    const request = fix.action === 'preview'
+      ? post('/api/production/revision', {action: 'move', key, revision_id: fix.revision_id, view: fix.view, preview_of: fix.preview_of})
+      : post('/api/production/revision', {action: 'kind', key, revision_ids: fix.revision_ids, kind: 'option'});
+    request.then(() => loadAsset(key)).then(() => toast('已整理')).catch(fail);
+    return;
+  }
   const shotButton = target.closest('[data-shot]');
   if (shotButton && S.viewer) { S.viewer.shot = Number(shotButton.dataset.shot); renderViewer(); return; }
   const switchSlot = target.closest('[data-switch-slot]');
@@ -1082,6 +1110,14 @@ document.addEventListener('click', event => {
 });
 
 document.addEventListener('submit', event => {
+  const ack = event.target.closest('[data-ack]');
+  if (ack && S.asset) {
+    event.preventDefault();
+    const finding = S.asset.audit[Number(ack.dataset.ack)];
+    post('/api/production/audit', {action: 'ack', key: S.asset.asset.key, rule: finding.rule, subject: finding.subject, note: ack.note.value})
+      .then(() => loadAsset(S.asset.asset.key)).then(() => toast('已记录，不再提示')).catch(fail);
+    return;
+  }
   const form = event.target.closest('[data-return-form]');
   if (!form) return;
   event.preventDefault();

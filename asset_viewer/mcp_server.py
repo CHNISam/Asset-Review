@@ -8,7 +8,7 @@ from .activity import activity_feed
 from .handoff import approved_handoff
 from .project_config import load_project_config
 from .project_sync import sync_project
-from . import production
+from . import production, production_audit
 from .storage import (
     annotations_for_asset,
     asset_metadata,
@@ -191,6 +191,18 @@ def reclassify_revision(revision_id: str, view: str, asset: str | None = None, p
     return production.move_revision(revision_id, view=view, asset=asset, preview_of=preview_of, actor="agent")
 
 
+def audit_production(asset: str | None = None, project: str | None = None) -> list[dict[str, Any]]:
+    """Findings from rules learned from past misclassifications, each with an exact fix command."""
+    results = [production_audit.audit(asset)] if asset else production_audit.audit_project(project)
+    return [{"asset": r["asset"], "findings": [{k: f[k] for k in ("rule", "severity", "subject", "slot", "message", "fixes")} for f in r["findings"]]}
+            for r in results]
+
+
+def mark_revisions(revision_ids: list[str], kind: str) -> dict[str, Any]:
+    """Mark revisions of one slot as 'revision' (successive iterations) or 'option' (competing alternatives)."""
+    return production.set_revision_kind(revision_ids, kind, actor="agent")
+
+
 def list_unsorted(asset: str) -> list[dict[str, Any]]:
     """Files in the asset folder whose slot or version is not a known fact (待归类)."""
     return [{k: item[k] for k in ("rel", "reason", "collection")} for item in production.unsorted_files(asset)]
@@ -243,6 +255,8 @@ def create_mcp_server():
     server.tool()(attach_preview)
     server.tool()(reclassify_revision)
     server.tool()(list_unsorted)
+    server.tool()(audit_production)
+    server.tool()(mark_revisions)
     server.tool()(attach_stage_evidence)
     server.tool()(report_stage_progress)
     server.tool()(cull_revision)

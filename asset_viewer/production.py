@@ -90,6 +90,8 @@ AGENT_STAGE_STATUSES = {"todo", "wip", "ready"}
 # A slot is what a design lock picks one revision for: a view (angle, screen) or a
 # variant (configurations that ship side by side, e.g. piano vs. round key layout).
 SLOT_KINDS = {"view", "variant"}
+# Inside a slot: revisions succeed each other (v1 → v2); options compete and one is chosen (方案 A / B).
+REVISION_KINDS = {"revision", "option"}
 OWNER_STAGE_STATUSES = {"accepted", "wip"}
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _VERSION_RE = re.compile(r"(?:^|[\W_])v(\d{1,3})(?=[\W_]|$)", re.IGNORECASE)
@@ -459,9 +461,11 @@ def _revision_by_number(conn: Any, asset_key: str, view_key: str, number: int) -
 
 def attach_revision(
     asset_key: str, view_key: str, collection: str, *, rel: str | None = None, file_id: str | None = None,
-    note: str = "", origin: str = "linked", actor: str = "agent", number: int | None = None,
+    note: str = "", origin: str = "linked", actor: str = "agent", number: int | None = None, kind: str = "revision",
 ) -> dict[str, Any]:
-    """Add a file as a new revision of one slot (explicit intent)."""
+    """Add a file as a new revision of one slot, or as a competing option (kind='option'); explicit intent."""
+    if kind not in REVISION_KINDS:
+        raise ValueError("revision kind must be revision or option")
     now = utc_now()
     with _connection() as conn:
         _asset_row(conn, asset_key)
@@ -470,8 +474,48 @@ def attach_revision(
         file_row = _catalog_row(conn, collection, rel, file_id)
         result = _insert_revision(conn, asset_key, view_key, file_row, number=number, note=_clean_text(note, "note"),
                                   origin=origin, now=now, actor=actor)
+        if kind != "revision":
+            conn.execute("UPDATE prod_revisions SET kind=? WHERE revision_id=?", (kind, result["revision_id"]))
         conn.execute("UPDATE prod_assets SET updated_at=? WHERE asset_key=?", (now, asset_key))
-    return result
+    return result | {"kind": kind}
+
+
+def set_revision_kind(revision_ids: Iterable[str], kind: str, *, actor: str = "agent") -> dict[str, Any]:
+    """Say what a set of files in one slot are: successive revisions, or competing options.
+
+    Only the relation label changes; numbers, files, selections and locks stay.
+    """
+    if kind not in REVISION_KINDS:
+        raise ValueError("revision kind must be revision or option")
+    ids = list(dict.fromkeys(revision_ids))
+    now = utc_now()
+    with _connection() as conn:
+        rows = [conn.execute("SELECT * FROM prod_revisions WHERE revision_id=?", (rid,)).fetchone() for rid in ids]
+        if not ids or any(row is None for row in rows):
+            raise ValueError("revision not found")
+        for row in rows:
+            conn.execute("UPDATE prod_revisions SET kind=?, updated_at=? WHERE revision_id=?", (kind, now, row["revision_id"]))
+        _event(conn, rows[0]["asset_key"], "revision_kind_set", actor,
+               {"view": rows[0]["view_key"], "numbers": [r["number"] for r in rows], "kind": kind}, now)
+    return {"ok": True, "kind": kind, "count": len(ids)}
+
+
+def acknowledge(asset_key: str, rule: str, subject: str, note: str = "", *, actor: str = "owner") -> dict[str, Any]:
+    """Record that an audit finding is intended, so it is not reported again."""
+    now = utc_now()
+    with _connection() as conn:
+        _asset_row(conn, asset_key)
+        conn.execute(
+            "INSERT OR REPLACE INTO prod_audit_acks(asset_key, rule, subject, note, actor, created_at) VALUES(?, ?, ?, ?, ?, ?)",
+            (asset_key, rule, subject, _clean_text(note, "note", 500), actor, now),
+        )
+        _event(conn, asset_key, "audit_acknowledged", actor, {"rule": rule, "subject": subject, "note": note}, now)
+    return {"ok": True}
+
+
+def acknowledgements(asset_key: str) -> set[tuple[str, str]]:
+    with _connection() as conn:
+        return {(row["rule"], row["subject"]) for row in conn.execute("SELECT rule, subject FROM prod_audit_acks WHERE asset_key=?", (asset_key,))}
 
 
 def attach_preview(
@@ -677,7 +721,8 @@ def lock_design(asset_key: str, note: str = "", *, actor: str = "owner") -> dict
                                  "sha256": preview["sha256"], "label": preview["label"]})
             locked.append({
                 "view": view["view_key"], "label": view["label"], "kind": view["kind"], "required": bool(view["required"]),
-                "revision_id": revision["revision_id"], "number": int(revision["number"]),
+                "revision_id": revision["revision_id"], "number": int(revision["number"]), "revision_kind": revision["kind"],
+                "note": revision["note"],
                 "collection": revision["collection"], "file_id": revision["file_id"], "rel": revision["rel"], "sha256": revision["sha256"],
                 "previews": previews,
             })
@@ -737,7 +782,8 @@ def design_lock(asset_key: str) -> dict[str, Any]:
                           "path": str(path) if path else None, "sha256": preview["sha256"]})
         entry = {
             "view": view["view"], "label": view["label"], "kind": view.get("kind", "view"), "required": view["required"],
-            "revision": f"v{view['number']}", "revision_id": view["revision_id"],
+            "revision": f"v{view['number']}" if view.get("revision_kind", "revision") == "revision" else "option",
+            "revision_id": view["revision_id"], **({"choice": view["note"]} if view.get("note") else {}),
             "collection": view["collection"], "rel": view["rel"], "path": str(source) if source else None,
             "sha256": view["sha256"], "files": files, "notes": comments.get(view["file_id"], ""),
         }
@@ -1209,7 +1255,7 @@ def _load(conn: Any, asset_key: str) -> dict[str, Any]:
     ):
         rel = row["current_rel"] or row["rel"]
         previews.setdefault(row["revision_id"], []).append({
-            "preview_id": row["preview_id"], "label": row["label"], "rel": rel, "file_id": row["file_id"],
+            "preview_id": row["preview_id"], "label": row["label"], "rel": rel, "file_id": row["file_id"], "sha256": row["sha256"],
             "collection": row["collection"], "present": bool(row["present"]),
             **(_media(row["collection"], rel) if row["present"] else {}),
         })
@@ -1223,6 +1269,7 @@ def _revision_payload(row: dict[str, Any], selected: set[str], locked: set[str])
     changed = bool(row.get("content_changed_at") and row["content_changed_at"] > row["created_at"])
     return {
         "revision_id": row["revision_id"], "view": row["view_key"], "number": int(row["number"]), "label": f"v{row['number']}",
+        "kind": row.get("kind") or "revision",
         "state": row["state"], "reason": row["state_reason"], "note": row["note"], "origin": row["origin"],
         "created_at": row["created_at"], "collection": row["collection"], "file_id": row["file_id"], "rel": rel,
         "present": present, "changed": changed, "width": row.get("width") or 0, "height": row.get("height") or 0,
@@ -1250,6 +1297,12 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
     selected_ids = {view["selected_revision_id"] for view in data["views"] if view["selected_revision_id"]}
     revisions = [_revision_payload(row, selected_ids, locked_ids) | {"previews": data["previews"].get(row["revision_id"], [])}
                  for row in data["revisions"]]
+    letters: dict[str, int] = {}
+    for revision in revisions:  # rows arrive ordered by slot and number
+        if revision["kind"] == "option":
+            letters[revision["view"]] = letters.get(revision["view"], 0) + 1
+            n = letters[revision["view"]]
+            revision["label"] = f"方案 {chr(64 + n)}" if n <= 26 else f"方案 {n}"
     by_view: dict[str, list[dict[str, Any]]] = {}
     for revision in revisions:
         by_view.setdefault(revision["view"], []).append(revision)
@@ -1276,7 +1329,9 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
             if newer:
                 status = "updated"
         elif status == "choose":
-            decisions.append({"type": "select", "view": view["view_key"], "text": f"选定「{view['label']}」版本", "detail": f"{len(active)} 个候选"})
+            options = sum(1 for item in active if item["kind"] == "option")
+            decisions.append({"type": "select", "view": view["view_key"], "text": f"选定「{view['label']}」{'方案' if options else '版本'}",
+                              "detail": f"{len(active)} 个{'备选方案' if options else '候选'}"})
         elif newer:
             status = "updated"
             decisions.append({"type": "select", "view": view["view_key"], "text": f"「{view['label']}」有新版本 {newer[-1]['label']}", "detail": f"当前选用 {selected['label']}" if selected else ""})
@@ -1426,7 +1481,8 @@ def agent_view(asset_key: str) -> dict[str, Any]:
         slots.append({
             "slot": view["view"], "label": view["label"], "kind": view["kind"], "required": view["required"], "status": view["status"],
             "revisions": [
-                {"v": r["number"], "id": r["revision_id"], "state": r["state"], "selected": r["selected"], "locked": r["locked"],
+                {"v": r["number"], "id": r["revision_id"], "kind": r["kind"], "label": r["label"], "state": r["state"],
+                 "selected": r["selected"], "locked": r["locked"],
                  "rel": r["rel"], "previews": [p["rel"] for p in r["previews"]], **({"note": r["note"]} if r["note"] else {})}
                 for r in view["revisions"]
             ],

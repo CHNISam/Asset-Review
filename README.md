@@ -57,6 +57,7 @@ Five words, five things:
 | **Variant** | a configuration that ships side by side with others | 钢琴布局 / 数字圆形布局 |
 | **View** | an angle or screen of one design | 正面 / 侧面 |
 | **Revision** | a real iteration of one variant or view | 钢琴布局 v1 → v2 |
+| **Option** | a competing alternative in one slot; one is chosen | 吉他 donor 方案 A / B, 强调色 |
 | **Preview** | another screenshot, angle, state or clip *of one revision* | v2 · 收起状态 |
 | **Design lock** | one revision per required variant/view, with all its previews | D2 = 钢琴 v2 + 圆形 v1 |
 
@@ -71,6 +72,8 @@ Files in the asset folder are classified from facts only:
 <asset>/design/<slot>/<no version>.png      → 待归类 (unsorted): never a new version, never cleaned up
 <asset>/model|uv|texture|rig|engine|source/ → evidence for that stage
 ```
+
+**Audit (garbage collection for misfiling).** Mistakes made once become rules (`asset_viewer/production_audit.py`), each naming its incident: states filed as versions, side-by-side configurations filed as versions, competing options filed as iterations, duplicate content, unsorted backlog, a lock whose bytes changed. The audit runs on every asset page (需要整理, with one-click fixes), after `prod discover` / `prod attach` (one summary line), and on demand: `asset-viewer prod audit [asset|--project P] [--json]`. It never changes data; a finding is fixed explicitly or acknowledged once with a reason (`prod ack <asset> <rule> <subject> --note "TASK-141 says…"`). `tests/test_audit.py` pins each rule to its incident so it cannot regress.
 
 Unsorted files wait on the asset page until someone files them as a new revision or as a preview of vN (`prod attach --preview-of N`). Data filed under the old "every file is a new version" rule is corrected with `prod move <revision> --slot <variant> [--preview-of N]`, which keeps the file, hash, comments, annotations, history and existing locks; selected or locked revisions are refused until the owner re-decides.
 

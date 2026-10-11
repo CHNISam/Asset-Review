@@ -4,6 +4,8 @@ All notable changes to Asset Viewer will be documented here.
 
 ## Unreleased
 
+- **Options and the audit.** Inside a slot, files either succeed each other (revision v1 → v2) or compete as options (方案 A / B, one is chosen); `prod_revisions.kind` records which. A production audit turns past misfiling into rules (states as versions, side-by-side configurations as versions, options as iterations, duplicates, unsorted backlog, unverified locks), shows them on the asset page with one-click fixes, prints a one-line summary after agent writes, and exposes `prod audit` / `prod mark` / `prod ack` and MCP `audit_production` / `mark_revisions`. Acknowledgements are stored with their reason. `tests/test_audit.py` pins every rule to its incident.
+
 - **Variants are not versions.** Slots are now views (angles, screens) or variants (configurations that ship side by side, such as piano vs. round key layouts); each iterates on its own and a design lock picks one revision per required slot. Revisions can hold any number of previews (screenshots, angles, interaction states, clips), stored in a new `prod_previews` table; `prod_views` gains one `kind` column. Both are additive migrations.
 - Discovery uses facts only: `design/<slot>/vN/` folders or `_vN` names; files without a declared slot or explicit version stay in 待归类 and are never versioned or cleaned up. Uploads add a new revision or a preview of vN by explicit choice.
 - Locks snapshot every file of each chosen revision; `prod lock` / `get_design_lock` return all required variants with `files[]`. Locks written before this change still read and verify.

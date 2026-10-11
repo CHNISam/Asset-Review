@@ -10,7 +10,7 @@ from __future__ import annotations
 import urllib.parse
 from typing import Any
 
-from . import production
+from . import production, production_audit
 from .storage import collections
 
 PREFIX = "/api/production/"
@@ -61,7 +61,8 @@ def handle_get(path: str, query_string: str) -> tuple[int, Any] | None:
             if not key:
                 return 400, {"error": "key is required"}
             _refresh(key)
-            return 200, production.asset_detail(key) | {"unsorted": production.unsorted_files(key)}
+            detail = production.asset_detail(key) | {"unsorted": production.unsorted_files(key)}
+            return 200, detail | {"audit": production_audit.audit(key, detail)["findings"]}
         if route == "lock":
             key = _first(query, "key")
             if not key:
@@ -69,6 +70,10 @@ def handle_get(path: str, query_string: str) -> tuple[int, Any] | None:
             return 200, production.design_lock(key)
         if route == "cleanup":
             return 200, production.cleanup_plan(_first(query, "asset") or None)
+        if route == "audit":
+            if _first(query, "asset"):
+                return 200, production_audit.audit(_first(query, "asset"))
+            return 200, {"assets": production_audit.audit_project(_first(query, "project") or None)}
         if route == "file":
             return 200, {"links": production.file_links(_first(query, "file_id")), "targets": production.assign_targets()}
     except ValueError as exc:
@@ -142,6 +147,17 @@ def handle_post(path: str, payload: dict[str, Any]) -> tuple[int, Any] | None:
                 return 200, production.asset_detail(key)
             if action == "detach":
                 production.detach_revision(revision_id, actor="owner")
+                return 200, production.asset_detail(key)
+            if action == "kind":
+                ids = payload.get("revision_ids")
+                if not isinstance(ids, list) or not ids:
+                    raise ValueError("revision_ids must be a non-empty list")
+                production.set_revision_kind([str(i) for i in ids], str(payload.get("kind") or ""), actor="owner")
+                return 200, production.asset_detail(key)
+        elif route == "audit":
+            if action == "ack":
+                production.acknowledge(key, str(payload.get("rule") or ""), str(payload.get("subject") or ""),
+                                       str(payload.get("note") or ""), actor="owner")
                 return 200, production.asset_detail(key)
         elif route == "preview":
             if action == "attach":

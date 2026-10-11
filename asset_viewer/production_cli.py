@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import production
+from . import production, production_audit
 
 
 def register(sub: Any) -> None:
@@ -82,6 +82,7 @@ def register(sub: Any) -> None:
     attach.add_argument("--preview-of", type=int, metavar="N", help="Add as another preview of vN instead")
     attach.add_argument("--label", default="", help="Preview label (state, angle …)")
     attach.add_argument("--note", default="")
+    attach.add_argument("--option", action="store_true", help="A competing alternative (方案 A/B), not an iteration")
 
     move = cmds.add_parser("move", help="Fix a misclassified revision: other slot/asset, or turn it into a preview")
     move.add_argument("revision_id")
@@ -112,6 +113,21 @@ def register(sub: Any) -> None:
     cull = cmds.add_parser("cull", help="Hide an obviously unusable candidate revision with a reason")
     cull.add_argument("revision_id")
     cull.add_argument("--reason", required=True)
+
+    audit = cmds.add_parser("audit", help="Check assets against rules learned from past misclassifications")
+    audit.add_argument("asset", nargs="?")
+    audit.add_argument("--project")
+    audit.add_argument("--json", action="store_true")
+
+    mark = cmds.add_parser("mark", help="Say what revisions in one slot are: successive revisions or competing options")
+    mark.add_argument("revision_ids", nargs="+")
+    mark.add_argument("kind", choices=sorted(production.REVISION_KINDS))
+
+    ack = cmds.add_parser("ack", help="Record that an audit finding is intended (stays quiet afterwards)")
+    ack.add_argument("asset")
+    ack.add_argument("rule", choices=sorted(production_audit.RULES))
+    ack.add_argument("subject")
+    ack.add_argument("--note", required=True, help="Why this is correct, e.g. the document that says so")
 
     cleanup = cmds.add_parser("cleanup-plan", help="List revisions that could be cleaned up (dry run only)")
     cleanup.add_argument("asset", nargs="?")
@@ -146,6 +162,12 @@ def _scan(collection: str | None, force: bool = False) -> None:
         from .app import scan_collection
 
         scan_collection(collection, force=force)  # cached unless files were just written
+
+
+def _audit_line(asset: str) -> None:
+    counts = production_audit.audit(asset)["counts"]
+    if counts["error"] or counts["warn"]:
+        print(f"audit: {counts['error']} error · {counts['warn']} warn → asset-viewer prod audit {asset}")
 
 
 def run(args: argparse.Namespace) -> None:
@@ -201,6 +223,7 @@ def run(args: argparse.Namespace) -> None:
             else:
                 print(f"revision {item['view']} v{item['number']}" + (f" (culled: {item['culled']})" if item.get("culled") else ""))
         print(f"{len(result['added'])} attached · 待归类 {result['unsorted']}")
+        _audit_line(args.asset)
     elif command == "unsorted":
         for item in production.unsorted_files(args.asset):
             print(f"{item['rel']}\t{item['reason']}")
@@ -210,8 +233,10 @@ def run(args: argparse.Namespace) -> None:
             print(f"preview of {result['view']} v{result['number']}")
         else:
             result = production.attach_revision(args.asset, args.view, args.collection, rel=args.rel, note=args.note,
-                                                number=args.revision, origin="agent", actor="agent")
+                                                number=args.revision, origin="agent", actor="agent",
+                                                kind="option" if args.option else "revision")
             print(f"revision {result['view']} v{result['number']}" + (f" (culled: {result['culled']})" if result["culled"] else ""))
+        _audit_line(args.asset)
     elif command == "move":
         result = production.move_revision(args.revision_id, view=args.view, asset=args.asset, preview_of=args.preview_of,
                                           number=args.revision, actor="agent")
@@ -232,6 +257,24 @@ def run(args: argparse.Namespace) -> None:
     elif command == "cull":
         production.cull_revision(args.revision_id, args.reason, actor="agent")
         print(f"culled {args.revision_id}")
+    elif command == "audit":
+        results = [production_audit.audit(args.asset)] if args.asset else production_audit.audit_project(args.project)
+        if args.json:
+            print(_json([{"asset": r["asset"], "findings": [{k: f[k] for k in ("rule", "severity", "subject", "slot", "message", "fixes")}
+                                                          for f in r["findings"]]} for r in results]))
+            return
+        for result in results:
+            for f in result["findings"]:
+                fix = next((x["command"] for x in f["fixes"] if x.get("command")), "")
+                print(f"{f['severity']}\t{result['asset']}\t{f['rule']}\t{f['message']}" + (f"\n\t→ {fix}" if fix else "")
+                      + f"\n\t  ack: asset-viewer prod ack {result['asset']} {f['rule']} {f['subject']} --note \"...\"")
+        if not any(r["findings"] for r in results):
+            print("audit: clean")
+    elif command == "mark":
+        print(_json(production.set_revision_kind(args.revision_ids, args.kind, actor="agent")))
+    elif command == "ack":
+        production.acknowledge(args.asset, args.rule, args.subject, args.note, actor="agent")
+        print("acknowledged")
     elif command == "cleanup-plan":
         for item in production.cleanup_plan(args.asset)["items"]:
             print(f"{item['asset']}\t{item['view']} v{item['number']}\t{item['reason']}\t{item['rel']}")
