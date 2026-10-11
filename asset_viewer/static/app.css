@@ -450,6 +450,7 @@ body[data-mode="library"] .nav-item.active{background:var(--elev);color:var(--te
 .vs-head{display:flex;align-items:center;gap:10px}
 .vs-ver-big{font:600 30px/1 var(--display);font-variant-numeric:tabular-nums}
 .vs-sub{margin:-8px 0 0;color:var(--faint);font-size:12.5px}
+.vs-note{margin:-4px 0 0;font-size:14px;line-height:1.6}
 .vs-reason{margin:0;color:var(--muted);font-size:13px}
 .vs-warn{margin:0;padding:8px 12px;border-radius:10px;background:var(--warn-soft);color:var(--warn);font-size:12.5px}
 .vs-decide{display:grid;gap:6px}
@@ -463,13 +464,13 @@ body[data-mode="library"] .nav-item.active{background:var(--elev);color:var(--te
 .note-list li.resolved{opacity:.55}
 .vs-keys{margin-top:auto;color:var(--faint);font-size:12px}
 .vs-film{display:flex;gap:8px;overflow-x:auto;padding:12px 24px 14px;background:var(--surface);border-top:1px solid var(--line);scrollbar-width:thin}
-.film{position:relative;flex:0 0 96px;min-height:0;padding:0;overflow:hidden;border-radius:9px;background:var(--matte);opacity:.7;transition:opacity .15s,box-shadow .15s}
+.film{position:relative;flex:0 0 112px;min-height:0;padding:0;overflow:hidden;border-radius:9px;background:var(--matte);opacity:.7;transition:opacity .15s,box-shadow .15s}
 .film:hover:not(:disabled){opacity:1;background:var(--matte)}
 .film.active{opacity:1;box-shadow:0 0 0 2px var(--ink)}
 .film.compare{opacity:1;box-shadow:0 0 0 2px var(--accent)}
 .film.culled{opacity:.35}
 .film img,.film video{display:block;width:100%;height:64px;object-fit:cover;pointer-events:none}
-.film span{display:block;padding:3px 0;color:var(--muted);font-size:11.5px;text-align:center;font-variant-numeric:tabular-nums}
+.film span{display:block;overflow:hidden;padding:3px 4px;white-space:nowrap;text-overflow:ellipsis;color:var(--muted);font-size:11.5px;text-align:center;font-variant-numeric:tabular-nums}
 
 /* Dialogs */
 .dialog-backdrop{position:fixed;inset:0;z-index:70;display:grid;place-items:center;padding:24px;background:rgba(28,25,23,.28);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);animation:fade .15s}

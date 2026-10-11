@@ -344,7 +344,7 @@ function nextAction(detail) {
 
 function viewCard(view, detail) {
   const current = view.current;
-  const chips = view.revisions.filter(r => r.state === 'candidate').map(r => `<span class="ver${r.selected ? ' selected' : ''}${r.locked ? ' locked' : ''}" title="${esc(r.label)}${r.selected ? ' · 已选用' : ''}${r.locked ? ' · 定稿' : ''}">${esc(r.label)}</span>`).join('');
+  const chips = view.revisions.filter(r => r.state === 'candidate').map(r => `<span class="ver${r.selected ? ' selected' : ''}${r.locked ? ' locked' : ''}" title="${esc(r.label)}${r.note ? ` · ${esc(r.note)}` : ''}${r.selected ? ' · 已选用' : ''}${r.locked ? ' · 定稿' : ''}">${esc(r.label)}</span>`).join('');
   const status = {
     locked: `定稿 ${current?.label || ''}`,
     selected: `已选 ${current?.label || ''} · 待定稿`,
@@ -557,7 +557,7 @@ function renderViewer() {
       <section class="vs-stage" data-stage-area>${stage}</section>
       <aside class="vs-panel">${current ? viewerPanel(view, current, culled) : ''}</aside>
     </div>
-    <nav class="vs-film">${shown.map(r => `<button type="button" class="film${r.revision_id === current?.revision_id ? ' active' : ''}${r.revision_id === other?.revision_id ? ' compare' : ''}${r.state === 'culled' ? ' culled' : ''}" data-rev="${esc(r.revision_id)}" title="${esc(r.label)}">${media(r, 'thumb')}<span>${esc(r.label)}${r.selected ? ' ●' : ''}</span></button>`).join('')}</nav>`;
+    <nav class="vs-film">${shown.map(r => `<button type="button" class="film${r.revision_id === current?.revision_id ? ' active' : ''}${r.revision_id === other?.revision_id ? ' compare' : ''}${r.state === 'culled' ? ' culled' : ''}" data-rev="${esc(r.revision_id)}" title="${esc(r.label)}">${media(r, 'thumb')}<span>${esc(r.label)}${r.note ? ` · ${esc(r.note.split(/[，,。:：]/)[0].slice(0, 14))}` : ''}${r.selected ? ' ●' : ''}</span></button>`).join('')}</nav>`;
   applyStyles($('#viewStudio'));
   if (current && S.viewer.loadedFor !== current.revision_id) loadAnnotations(current).catch(console.error);
 }
@@ -570,6 +570,7 @@ function viewerPanel(view, current, culled) {
     <div class="vs-head"><strong class="vs-ver-big">${esc(current.label)}</strong>
       ${isSelected ? `<span class="status-pill accepted">${current.locked ? '定稿' : '已选用'}</span>` : current.state === 'culled' ? `<span class="status-pill culled">已筛除</span>` : ''}</div>
     <p class="vs-sub">${esc(day(current.created_at))} · ${esc(ORIGIN_TEXT[current.origin] || current.origin)}${dims ? ` · ${dims}` : ''}</p>
+    ${current.note ? `<p class="vs-note">${esc(current.note)}</p>` : ''}
     ${current.state === 'culled' ? `<p class="vs-reason">筛除原因：${esc(current.reason || '未说明')}</p>` : ''}
     ${current.changed ? '<p class="vs-warn">文件在加入后被改动过，定稿前请重新上传为新版本。</p>' : ''}
     <div class="vs-decide">

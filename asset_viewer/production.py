@@ -969,7 +969,11 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
             status = "choose"
         else:
             status = "missing"
-        if status == "choose":
+        # Optional views never queue owner decisions.
+        if not view["required"]:
+            if newer:
+                status = "updated"
+        elif status == "choose":
             decisions.append({"type": "select", "view": view["view_key"], "text": f"选定「{view['label']}」版本", "detail": f"{len(active)} 个候选"})
         elif newer:
             status = "updated"
@@ -1052,7 +1056,8 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
     for stage in reversed(stages):
         if stage["stage"] == "design":
             continue
-        shown = [item for item in stage["evidence"] if item.get("thumb")]
+        # Stills make better covers; video posters need FFmpeg and may be blank.
+        shown = [item for item in stage["evidence"] if item.get("thumb") and item["media_type"] == "image"]             or [item for item in stage["evidence"] if item.get("thumb")]
         if shown:
             cover = {"stage": stage["stage"], "label": stage["label"], "caption": shown[-1]["caption"], **{k: shown[-1][k] for k in ("thumb", "preview", "file", "media_type")}}
             break
