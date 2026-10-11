@@ -148,6 +148,15 @@ button.primary:hover:not(:disabled),.button.primary:hover{background:var(--ink);
 .side-heading{display:flex;align-items:center;justify-content:space-between;min-height:26px;padding:0 6px 4px 10px;color:var(--faint);font-size:12px;letter-spacing:.04em}
 .side-add{display:grid;place-items:center;width:24px;min-height:24px;padding:0;border-radius:7px;background:transparent;color:var(--faint);font-size:17px;line-height:1}
 .side-add:hover:not(:disabled){background:var(--fill);color:var(--text)}
+.side-toggle{width:100%;min-height:30px;border-radius:8px;background:transparent;gap:8px;text-align:left}
+.side-toggle:hover:not(:disabled){background:var(--fill);color:var(--muted)}
+.side-toggle:active:not(:disabled){transform:none}
+.side-toggle span{flex:0 0 auto}
+.side-toggle small{flex:1;color:var(--faint);font-size:11.5px;letter-spacing:0}
+.side-toggle i{width:6px;height:6px;margin-right:4px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);transition:transform .2s var(--ease)}
+.library-section.open .side-toggle i{transform:rotate(45deg)}
+.library-body{display:none;padding-top:2px}
+.library-section.open .library-body{display:block}
 .side-empty{padding:6px 10px 10px;color:var(--faint);font-size:12.5px}
 .asset-nav{display:grid;gap:1px}
 .asset-nav-scene{padding:10px 10px 3px;color:var(--faint);font-size:11.5px}

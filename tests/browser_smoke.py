@@ -149,8 +149,12 @@ def main() -> None:
                 def switch_project(name: str) -> None:
                     page.locator("#projectSwitcher").click()
                     page.locator(f'[data-project-pick="{name}"]').click()
+                    page.locator("#studioView .page-head, #studioView .empty-state").first.wait_for()
+                    page.wait_for_timeout(300)
 
                 def open_library(selector: str) -> None:
+                    if page.locator("#libraryBody").is_hidden():
+                        page.locator("#libraryToggle").click()
                     page.locator(f"#collectionNav {selector}").first.click()
                     page.locator("#libraryView").wait_for(state="visible")
 

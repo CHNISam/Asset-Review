@@ -24,10 +24,12 @@
         <div class="side-heading"><span>资产</span><button id="newAsset" class="side-add" type="button" title="新建资产" aria-label="新建资产">+</button></div>
         <div id="assetNav" class="asset-nav"></div>
       </section>
-      <section class="side-section library-section">
-        <div class="side-heading"><span>素材库</span></div>
-        <div id="libraryEmpty" class="side-empty hidden">此项目还没有登记素材目录</div>
-        <nav id="collectionNav" class="collection-nav" aria-label="素材目录"></nav>
+      <section id="librarySection" class="side-section library-section">
+        <button id="libraryToggle" class="side-heading side-toggle" type="button" aria-expanded="false" aria-controls="libraryBody"><span>素材库</span><small id="libraryMeta"></small><i aria-hidden="true"></i></button>
+        <div id="libraryBody" class="library-body">
+          <div id="libraryEmpty" class="side-empty hidden">此项目还没有登记素材目录</div>
+          <nav id="collectionNav" class="collection-nav" aria-label="素材目录"></nav>
+        </div>
       </section>
     </div>
     <div class="side-foot"><button id="themeToggle" class="foot-btn" type="button" title="主题：浅色" aria-label="切换主题"><span id="themeLabel" class="visually-hidden">主题：浅色</span><span aria-hidden="true">◐</span></button><button id="paletteHint" class="foot-btn" type="button" title="命令面板 (Ctrl K)" aria-label="命令面板"><kbd>Ctrl K</kbd></button></div>

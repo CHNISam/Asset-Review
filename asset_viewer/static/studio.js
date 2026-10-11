@@ -6,6 +6,7 @@
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char]));
 const PROJECT_KEY = 'asset-review.project';
+const LIBRARY_KEY = 'asset-review.library';
 const S = {csrf: '', meta: null, projects: [], project: '', overview: null, asset: null, route: {name: 'overview'}, viewer: null, showCulled: false};
 
 function readPref(key, fallback = '') {
@@ -127,6 +128,7 @@ function setMode(mode) {
 function showLibrary() {
   if (document.body.dataset.mode === 'library') return;
   setMode('library');
+  $('#librarySection').classList.add('open');
   window.AR.library.syncUrl();
 }
 
@@ -205,6 +207,12 @@ function renderSidebar() {
     }).join('')}`).join('') : '<div class="side-empty">还没有资产</div>';
   const libraryProjects = window.AR?.library?.projectNames?.() || [];
   $('#libraryEmpty').classList.toggle('hidden', !S.project || libraryProjects.includes(S.project));
+  const folders = S.project ? (window.AR?.library?.collectionsFor?.(S.project) || []).length : 0;
+  $('#libraryMeta').textContent = folders ? `${folders} 个目录` : '';
+  // Raw folders stay folded away unless the library is what you are looking at.
+  const open = document.body.dataset.mode === 'library' || readPref(LIBRARY_KEY) === 'open';
+  $('#librarySection').classList.toggle('open', open);
+  $('#libraryToggle').setAttribute('aria-expanded', String(open));
 }
 
 function renderProjectMenu() {
@@ -892,6 +900,13 @@ document.addEventListener('click', event => {
     return;
   }
   if (target.closest('#projectSwitcher')) { toggleProjectMenu(); return; }
+  if (target.closest('#libraryToggle')) {
+    const open = !$('#librarySection').classList.contains('open');
+    writePref(LIBRARY_KEY, open ? 'open' : 'closed');
+    $('#librarySection').classList.toggle('open', open);
+    $('#libraryToggle').setAttribute('aria-expanded', String(open));
+    return;
+  }
   const pick = target.closest('[data-project-pick]');
   if (pick) { switchProject(pick.dataset.projectPick).catch(fail); return; }
   if (target.closest('[data-project-new]')) { newProjectDialog(); return; }

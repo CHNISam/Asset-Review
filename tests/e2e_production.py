@@ -190,6 +190,8 @@ def main() -> None:
                 expect(page.locator(".work-next.done")).to_be_visible()
                 expect(page.locator(".work-card")).to_have_count(2)
                 shoot(page, shots, "10-overview")
+                expect(page.locator("#libraryBody")).to_be_hidden()  # raw folders stay folded in the studio
+                page.locator("#libraryToggle").click()
                 page.locator(".collection-link").first.click()
                 expect(page.locator("#libraryView")).to_be_visible()
                 page.locator(".card").first.click()

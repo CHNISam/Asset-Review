@@ -508,8 +508,9 @@ function pendingCount(collections) {
   }, 0);
 }
 
-function countBadge(count) {
-  return count ? `<span class="nav-count" title="待审">${count}</span>` : '';
+// The sidebar library is a file browser; owner decisions live on assets, so no pending counts here.
+function countBadge() {
+  return '';
 }
 
 function projectMeta(project) {
