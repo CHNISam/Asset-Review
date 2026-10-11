@@ -106,6 +106,12 @@ The file **素材库** stays one click away in the sidebar for browsing register
 
 For a project-owned reusable declaration, commit a relative `.asset-viewer.toml` and run `asset-viewer project-sync`; see [Project-native registration and metadata](#project-native-registration-and-metadata).
 
+### Scope and work items
+
+OpenCrit focuses on art review: images and video, design locks, production evidence and in-engine acceptance. Audio management is deferred on `feature/audio`; audio files are not scanned, uploaded or served. Existing originals and database history remain intact, but legacy audio production items are hidden from active workflows.
+
+Work is tracked with [Backlog.md](Backlog.md), with `backlog/tasks/` as the sole status source. See [美术资产管理规范](docs/ART_ASSETS.md) for registration, variants vs. revisions, human approval, provenance, handoff and cleanup.
+
 ### File library review
 
 Files in the 素材库 that are not yet part of an asset can still be judged one by one. **逐张审** opens it at the first pending item in the current filter (design first, archive skipped); clicking any image opens the same view.

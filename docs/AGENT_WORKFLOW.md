@@ -2,6 +2,10 @@
 
 Asset Viewer was built around a simple boundary: **agents create files; humans review them; the viewer does not become the source of truth.**
 
+## Scope and work items
+
+Use [../Backlog.md](../Backlog.md) for OpenCrit development tasks and [ART_ASSETS.md](ART_ASSETS.md) for art conventions. Current review media are images and videos; audio is deferred. Source files belong to their project, not a second OpenCrit library.
+
 ## Production assets
 
 When the work is a game asset rather than a loose batch of images:
@@ -89,8 +93,7 @@ The status meanings are deliberately narrow:
 - **Unreviewed**: an agent must not infer a final decision.
 - **Maybe**: iterate from the attached feedback; do not treat it as a final
   version.
-- **Rejected**: retain the original and its history, but do not carry it
-  forward as the selected direction.
+- **Rejected**: do not carry it forward as the selected direction. Rejection itself does not delete the original; Owner-authorized cleanup follows the retention rules in ART_ASSETS.md.
 - **Approved**: the Owner's current visual selection. An agent may use it,
   its comments, annotations, and selected family member as input to the next
   design or search pass.

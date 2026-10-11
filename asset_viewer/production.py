@@ -145,6 +145,8 @@ def _asset_row(conn: Any, asset_key: str) -> Any:
     row = conn.execute("SELECT * FROM prod_assets WHERE asset_key=?", (asset_key,)).fetchone()
     if not row:
         raise ValueError(f"asset not found: {asset_key}")
+    if row["kind"] not in KINDS:
+        raise ValueError("audio management is deferred; existing records are retained")
     return row
 
 
@@ -153,7 +155,7 @@ def _catalog_row(conn: Any, collection: str, rel: str | None = None, file_id: st
         row = conn.execute("SELECT * FROM assets WHERE asset_id=? AND collection=?", (file_id, collection)).fetchone()
     else:
         row = conn.execute("SELECT * FROM assets WHERE collection=? AND rel=?", (collection, rel or "")).fetchone()
-    if not row or not row["present"]:
+    if not row or not row["present"] or Path(row["rel"]).suffix.lower() not in ASSET_EXTS:
         raise ValueError("file is not in the catalog; scan the collection first")
     return row
 
@@ -179,7 +181,7 @@ def _triage(rel: str, width: int, height: int, sha256: str, siblings: dict[str, 
 def projects() -> list[dict[str, Any]]:
     counts: dict[str, dict[str, Any]] = {}
     with _connection() as conn:
-        for row in conn.execute("SELECT project, COUNT(*) AS n FROM prod_assets GROUP BY project"):
+        for row in conn.execute("SELECT project, COUNT(*) AS n FROM prod_assets WHERE kind NOT IN ('instrument', 'music', 'sfx') GROUP BY project"):
             counts.setdefault(row["project"], {"name": row["project"], "assets": 0, "collections": 0})["assets"] = int(row["n"])
     for row in collections():
         name = (row.get("group") or "").split("/")[0].strip() or "未分组"
@@ -970,7 +972,7 @@ def _folder_files(conn: Any, asset: Any) -> list[tuple[Any, tuple[Any, ...]]]:
     linked |= {row["file_id"] for row in conn.execute("SELECT file_id FROM prod_evidence WHERE collection=?", (collection,))}
     found = []
     for row in conn.execute("SELECT * FROM assets WHERE collection=? AND present=1 ORDER BY rel", (collection,)):
-        if row["asset_id"] in linked:
+        if Path(row["rel"]).suffix.lower() not in ASSET_EXTS or row["asset_id"] in linked:
             continue
         rel = str(row["rel"])
         if prefix and not rel.startswith(prefix + "/"):
@@ -1109,6 +1111,8 @@ def cleanup_plan(asset_key: str | None = None) -> dict[str, Any]:
             assets = conn.execute("SELECT * FROM prod_assets").fetchall()
         evidence_files = {row["file_id"] for row in conn.execute("SELECT file_id FROM prod_evidence WHERE file_id IS NOT NULL")}
         for asset in assets:
+            if asset["kind"] not in KINDS:
+                continue
             key = asset["asset_key"]
             protected = _locked_revision_ids(conn, key, all_locks=True)
             protected |= {row["selected_revision_id"] for row in conn.execute("SELECT selected_revision_id FROM prod_views WHERE asset_key=? AND selected_revision_id IS NOT NULL", (key,))}
@@ -1516,7 +1520,7 @@ def file_links(file_id: str) -> list[dict[str, Any]]:
 def assign_targets() -> list[dict[str, Any]]:
     """Every asset with its views and stages, for 'add this file to ...' menus."""
     with _connection() as conn:
-        assets = conn.execute("SELECT * FROM prod_assets ORDER BY project, scene, sort, name").fetchall()
+        assets = conn.execute("SELECT * FROM prod_assets WHERE kind NOT IN ('instrument', 'music', 'sfx') ORDER BY project, scene, sort, name").fetchall()
         numbers: dict[tuple[str, str], list[int]] = {}
         for row in conn.execute("SELECT asset_key, view_key, number FROM prod_revisions WHERE state<>'archived' ORDER BY number"):
             numbers.setdefault((row["asset_key"], row["view_key"]), []).append(int(row["number"]))
@@ -1538,9 +1542,9 @@ def source_collection(asset_key: str) -> str | None:
 def asset_keys(project: str | None = None) -> list[str]:
     with _connection() as conn:
         if project:
-            rows = conn.execute("SELECT asset_key FROM prod_assets WHERE project=? ORDER BY scene, sort, name", (project,))
+            rows = conn.execute("SELECT asset_key FROM prod_assets WHERE project=? AND kind NOT IN ('instrument', 'music', 'sfx') ORDER BY scene, sort, name", (project,))
         else:
-            rows = conn.execute("SELECT asset_key FROM prod_assets ORDER BY project, scene, sort, name")
+            rows = conn.execute("SELECT asset_key FROM prod_assets WHERE kind NOT IN ('instrument', 'music', 'sfx') ORDER BY project, scene, sort, name")
         return [row["asset_key"] for row in rows]
 
 

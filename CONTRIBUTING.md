@@ -32,3 +32,7 @@ asset-viewer serve
 Keep changes focused. Include tests for backend/CLI behavior where practical. For visual changes, include a screenshot or short description of the interaction that changed.
 
 Please do not commit private image sets, machine-specific paths, API tokens, or review-state files.
+
+## Work items
+
+Read [Backlog.md](Backlog.md) before starting. Create or reuse a task in `backlog/tasks/`, state the outcome and acceptance criteria, and record verification before marking it Done. Deferred tasks are not part of the active scope. Art conventions are in [docs/ART_ASSETS.md](docs/ART_ASSETS.md).

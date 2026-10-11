@@ -289,6 +289,8 @@ def _gallery_rows(slug: str, records: list[dict[str, Any]]) -> list[dict[str, An
         rel = record["rel"]
         quoted = urllib.parse.quote(rel, safe="/")
         mtime_ns = int(record.get("mtime_ns") or 0)
+        if Path(rel).suffix.lower() not in ASSET_EXTS:
+            continue  # Keep pre-upgrade records without displaying unsupported media.
         media_type = "video" if Path(rel).suffix.lower() in VIDEO_EXTS else "image"
         rows.append({
             "asset_id": record.get("asset_id"),
