@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Track work with Backlog.md; task states live only in `backlog/tasks/`. Migrate the remaining roadmap directions and mark future work as deferred.
+- Document the minimal art workflow, slot/revision distinctions, exact design-lock handoff, human acceptance and retention.
+- Build on the audio removal already in main: preserve legacy database records while excluding them from active gallery and production workflows. Keep `feature/audio` as the deferred implementation.
+
+
 All notable changes to Asset Viewer will be documented here.
 
 ## Unreleased
