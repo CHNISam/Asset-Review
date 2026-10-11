@@ -25,9 +25,11 @@ from . import __version__
 from .preview_worker import inspect_images_worker, render_preview_worker, render_video_poster_worker
 from .activity import activity_feed
 from .handoff import approved_handoff
+from .audio import peaks_for, render_waveform
 from . import production_api
 from .storage import (
     ASSET_EXTS,
+    AUDIO_EXTS,
     IMAGE_EXTS,
     VIDEO_EXTS,
     asset_rel,
@@ -102,6 +104,25 @@ _CACHE_PRUNE_LOCK = threading.Lock()
 _LAST_CACHE_PRUNE = 0.0
 PROCESS_CONTEXT = multiprocessing.get_context("spawn")
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+
+
+def byte_range(header: str | None, size: int) -> tuple[int, int] | None | bool:
+    """Parse a single `bytes=` range. None = whole file, False = unsatisfiable."""
+    if not header or not header.startswith("bytes=") or "," in header:
+        return None
+    start_text, _, end_text = header[6:].strip().partition("-")
+    try:
+        if start_text:
+            start = int(start_text)
+            end = int(end_text) if end_text else size - 1
+        else:
+            length = int(end_text)
+            start, end = max(0, size - length), size - 1
+    except ValueError:
+        return None
+    if start >= size or start < 0 or end < start:
+        return False
+    return start, min(end, size - 1)
 
 
 def capability_document() -> dict[str, Any]:
@@ -270,7 +291,8 @@ def _gallery_rows(slug: str, records: list[dict[str, Any]]) -> list[dict[str, An
         rel = record["rel"]
         quoted = urllib.parse.quote(rel, safe="/")
         mtime_ns = int(record.get("mtime_ns") or 0)
-        media_type = "video" if Path(rel).suffix.lower() in VIDEO_EXTS else "image"
+        suffix = Path(rel).suffix.lower()
+        media_type = "video" if suffix in VIDEO_EXTS else "audio" if suffix in AUDIO_EXTS else "image"
         rows.append({
             "asset_id": record.get("asset_id"),
             "collection": slug,
@@ -464,6 +486,13 @@ def _render_preview(path: Path, destination: Path, max_size: tuple[int, int]) ->
         # Source-byte validation belongs inside the disposable preview worker.
         # Avoid a second parent-process filesystem touch after safe_file() has
         # already established collection containment.
+        if path.suffix.lower() in AUDIO_EXTS:
+            # Only RIFF headers and samples are read; no codec or image decoder runs on the source.
+            try:
+                return render_waveform(path, destination, max_size)
+            except (OSError, ValueError) as exc:
+                LOGGER.warning("waveform failed for %s: %s", path, exc)
+                return _placeholder_preview(path, "Audio waveform unavailable", placeholder_size, destination)
         if path.suffix.lower() in VIDEO_EXTS:
             payload = _run_isolated_worker(
                 render_video_poster_worker,
@@ -578,6 +607,35 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _send_media(self, content_type: str, path: Path, extra: dict[str, str]) -> None:
+        """Serve an original with Range support so audio/video can seek and A/B at the same time code."""
+        size = path.stat().st_size
+        span = byte_range(self.headers.get("Range"), size)
+        if span is False:
+            return self._send(416, "text/plain; charset=utf-8", "Range not satisfiable", {"Content-Range": f"bytes */{size}"})
+        if span is None:
+            return self._send_path(200, content_type, path, extra | {"Accept-Ranges": "bytes"})
+        start, end = span
+        self.send_response(206)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(end - start + 1))
+        headers = self._security_headers() | extra | {"Accept-Ranges": "bytes", "Content-Range": f"bytes {start}-{end}/{size}"}
+        for key, value in headers.items():
+            self.send_header(key, value)
+        self.end_headers()
+        try:
+            with path.open("rb") as handle:
+                handle.seek(start)
+                remaining = end - start + 1
+                while remaining:
+                    chunk = handle.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _discard_rejected_body(self, length: int | None = None) -> None:
         """Drain a small rejected POST body so the HTTP response is delivered reliably."""
         try:
@@ -632,6 +690,8 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
             return self._static("app.js", "application/javascript; charset=utf-8")
         if path == "/studio.js":
             return self._static("studio.js", "application/javascript; charset=utf-8")
+        if path == "/audio.js":
+            return self._static("audio.js", "application/javascript; charset=utf-8")
         production = production_api.handle_get(path, parsed.query)
         if production is not None:
             return self._send_json(*production)
@@ -760,7 +820,7 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
             if not root_for(collection) or not rel:
                 return self._send_json(400, {"error": "collection plus rel or asset_id are required"})
             return self._send_json(200, {"collection": collection, "rel": rel, "events": review_history(collection, rel)})
-        if path.startswith("/asset/file/") or path.startswith("/asset/thumb/") or path.startswith("/asset/preview/"):
+        if path.startswith(("/asset/file/", "/asset/thumb/", "/asset/preview/", "/asset/peaks/")):
             parts = path.split("/", 4)
             if len(parts) != 5:
                 return self._send(404, "text/plain; charset=utf-8", "Not found")
@@ -768,6 +828,10 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
             source = safe_file(slug, relative)
             if not source:
                 return self._send(404, "text/plain; charset=utf-8", "Not found")
+            if kind == "peaks":
+                if source.suffix.lower() not in AUDIO_EXTS:
+                    return self._send_json(404, {"error": "not audio"})
+                return self._send_json(200, peaks_for(source), {"Cache-Control": "private, max-age=86400"})
             if kind == "thumb":
                 return self._send(200, "image/jpeg", make_thumbnail(source), {"Cache-Control": "private, max-age=86400"})
             if kind == "preview":
@@ -776,7 +840,7 @@ class AssetViewerHandler(BaseHTTPRequestHandler):
                 filename = urllib.parse.quote(source.name, safe="")
                 return self._send_path(200, "application/octet-stream", source, {"Cache-Control": "private, max-age=3600", "Content-Disposition": f"attachment; filename*=UTF-8''{filename}"})
             content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
-            return self._send_path(200, content_type, source, {"Cache-Control": "private, max-age=3600"})
+            return self._send_media(content_type, source, {"Cache-Control": "private, max-age=3600"})
         return self._send(404, "text/plain; charset=utf-8", "Not found")
 
     def _payload_rel(self, slug: str, payload: dict[str, Any]) -> str:

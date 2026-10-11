@@ -100,7 +100,9 @@ const USE_LABELS = {
   design: '设计',
   runtime: '实机',
   asset: '资产',
+  audition: '试听',
   archive: '存档',
+  bank: '音源库',
   uncategorized: '未标注',
 };
 
@@ -111,11 +113,15 @@ const USE_QUESTIONS = {
   design: '能进制作吗？',
   runtime: '实现到位吗？',
   asset: '能交付吗？',
+  audition: '听感对吗？',
   archive: '无需审核',
+  bank: '按音源版本评审，不逐个审核',
   uncategorized: '未标注用途',
 };
 
-const isArchive = asset => assetTaxonomy(asset).use === 'archive';
+// Kept for the record only: never pending, never in the 逐张审 queue.
+const NO_REVIEW_USES = new Set(['archive', 'bank']);
+const isArchive = asset => NO_REVIEW_USES.has(assetTaxonomy(asset).use);
 
 function useQuestion(asset) {
   const use = assetTaxonomy(asset).use;
@@ -144,6 +150,8 @@ function collectionTaxonomy(collectionOrSlug) {
     runtime: 'runtime', '实机': 'runtime',
     asset: 'asset', assets: 'asset', '资产': 'asset',
     archive: 'archive', evidence: 'archive', '存档': 'archive', '证据': 'archive', '归档': 'archive',
+    audition: 'audition', '试听': 'audition',
+    bank: 'bank', samplebank: 'bank', 'sample bank': 'bank', sources: 'bank', '音源库': 'bank', '采样库': 'bank',
     uncategorized: 'uncategorized', '未分类': 'uncategorized', '未标注': 'uncategorized',
   };
   const use = declaredUses[declaredUse] || 'uncategorized';
@@ -322,6 +330,7 @@ function applyGalleryScope(payloads, scope) {
 }
 
 async function load(requested, force = false) {
+  if (requested) railProject = '';
   const requestedAsset = assetFromLocation();
   const desired = requested || state.active || collectionFromLocation();
   const request = ++state.scopeRequest;
@@ -338,6 +347,7 @@ async function load(requested, force = false) {
 }
 
 async function loadScope(slugs, scope, force = false) {
+  railProject = '';
   const unique = [...new Set(slugs)].filter(Boolean);
   if (!unique.length) return;
   const request = ++state.scopeRequest;
@@ -491,7 +501,12 @@ function projectNames() {
   return [...new Set(state.collections.map(collection => collectionTaxonomy(collection).project))].sort(sortZh);
 }
 
+// The studio names the project for the sidebar without loading any files;
+// clicking a folder or scope then loads exactly that.
+let railProject = '';
+
 function currentProject() {
+  if (railProject) return railProject;
   if (state.scope.kind === 'all') return '';
   return state.scope.project || collectionTaxonomy(state.active).project;
 }
@@ -503,7 +518,7 @@ function collapsedSections() {
 // Pending counts come from /api/pending; archive collections never ask for review.
 function pendingCount(collections) {
   return collections.reduce((total, collection) => {
-    if (collectionTaxonomy(collection).use === 'archive') return total;
+    if (NO_REVIEW_USES.has(collectionTaxonomy(collection).use)) return total;
     return total + Number(state.pending[collection.slug]?.unreviewed || 0);
   }, 0);
 }
@@ -542,7 +557,7 @@ function collectionRow(collection, label, child = false) {
   const taxonomy = collectionTaxonomy(collection);
   const info = state.pending[collection.slug];
   const active = state.scope.kind === 'collection' && collection.slug === state.active;
-  const archived = taxonomy.use === 'archive';
+  const archived = NO_REVIEW_USES.has(taxonomy.use);
   const title = [collection.label, `${useLabel(taxonomy.use)} · ${USE_QUESTIONS[taxonomy.use]}`, info ? `共 ${info.total} 项` : ''].filter(Boolean).join('\n');
   const lead = child ? '' : '<span class="nav-disclosure placeholder" aria-hidden="true"></span>';
   return `<button type="button" class="nav-item collection-link${child ? ' child' : ''}${active ? ' active' : ''}${archived ? ' archived' : ''}" data-collection="${esc(collection.slug)}" title="${esc(title)}"${collection.available === false ? ' disabled' : ''}>${lead}<span class="nav-label">${esc(label)}</span>${collection.available === false ? '<span class="nav-count">不可用</span>' : (archived ? '<span class="nav-count" aria-label="存档">—</span>' : countBadge(Number(info?.unreviewed || 0)))}</button>`;
@@ -746,7 +761,7 @@ function nextPendingIndex(from) {
 
 function renderFilmstrip() {
   const strip = $('#filmstrip');
-  strip.innerHTML = state.filtered.map((asset, index) => `<button type="button" class="film-frame${asset.status ? ` ${esc(asset.status)}` : ''}" data-film="${index}" aria-label="${esc(`${index + 1}. ${asset.name} · ${statusDisplay(asset.status)}`)}"><img loading="lazy" src="${esc(asset.thumb)}" alt="">${asset.media_type === 'video' ? '<span>▶</span>' : ''}</button>`).join('');
+  strip.innerHTML = state.filtered.map((asset, index) => `<button type="button" class="film-frame${asset.status ? ` ${esc(asset.status)}` : ''}" data-film="${index}" aria-label="${esc(`${index + 1}. ${asset.name} · ${statusDisplay(asset.status)}`)}"><img loading="lazy" src="${esc(asset.thumb)}" alt="">${asset.media_type === 'video' ? '<span>▶</span>' : asset.media_type === 'audio' ? '<span>♪</span>' : ''}</button>`).join('');
   strip.dataset.gen = String(state.filterGen);
 }
 
@@ -803,8 +818,8 @@ function applyFilter() {
     ].join('');
     const quick = [['approved', '✓', '通过', 1], ['rejected', '✕', '拒绝', 2], ['maybe', '✎', '修改', 3]]
       .map(([value, mark, label, key]) => `<button type="button" data-quick="${value}" class="${status === value ? 'on' : ''}" title="${label} (${key})" aria-label="${label} ${esc(asset.name)}">${mark}</button>`).join('');
-    return `<article class="card${selected ? ' selected' : ''}${status ? ` status-${esc(status)}` : ''}" data-i="${index}" tabindex="0" aria-pressed="${state.selectionMode ? String(selected) : 'false'}" title="${esc(asset.rel || asset.name)}">
-      <div class="thumb-wrap"><img class="thumb" loading="lazy" decoding="async" src="${esc(asset.thumb)}" alt="${esc(asset.name)}">${asset.media_type === 'video' ? '<span class="video-play" aria-hidden="true">▶</span>' : ''}${badge}<input class="select-toggle" data-select="${index}" type="checkbox" ${selected ? 'checked' : ''} ${state.selectionMode ? '' : 'tabindex="-1"'} aria-label="${selected ? '取消选择' : '选择'} ${esc(asset.name)}"><div class="card-actions">${quick}</div></div>
+    return `<article class="card${asset.media_type === 'audio' ? ' media-audio' : ''}${selected ? ' selected' : ''}${status ? ` status-${esc(status)}` : ''}" data-i="${index}" tabindex="0" aria-pressed="${state.selectionMode ? String(selected) : 'false'}" title="${esc(asset.rel || asset.name)}">
+      <div class="thumb-wrap"><img class="thumb" loading="lazy" decoding="async" src="${esc(asset.thumb)}" alt="${esc(asset.name)}">${asset.media_type === 'video' ? '<span class="video-play" aria-hidden="true">▶</span>' : ''}${asset.media_type === 'audio' ? `<div class="card-listen">${window.ARAudio.player(asset, {compact: true})}</div>` : ''}${badge}<input class="select-toggle" data-select="${index}" type="checkbox" ${selected ? 'checked' : ''} ${state.selectionMode ? '' : 'tabindex="-1"'} aria-label="${selected ? '取消选择' : '选择'} ${esc(asset.name)}"><div class="card-actions">${quick}</div></div>
       <div class="caption"><div class="name">${esc(asset.name)}</div><div class="card-meta">${meta}</div><div class="card-chips">${chips}</div></div>
     </article>`;
   }).join('');
@@ -1093,11 +1108,20 @@ function openAt(index, updateUrl = true) {
   state.current = (index + state.filtered.length) % state.filtered.length;
   const asset = state.filtered[state.current];
   const isVideo = asset.media_type === 'video';
+  const isAudio = asset.media_type === 'audio';
   const full = $('#full');
   const video = $('#videoFull');
-  full.classList.toggle('hidden', isVideo);
+  const audioFull = $('#audioFull');
+  window.ARAudio.pauseAll();
+  full.classList.toggle('hidden', isVideo || isAudio);
   video.classList.toggle('hidden', !isVideo);
-  if (isVideo) {
+  audioFull.classList.toggle('hidden', !isAudio);
+  audioFull.innerHTML = isAudio ? window.ARAudio.player(asset) : '';
+  if (isAudio) {
+    video.pause();
+    video.removeAttribute('src');
+    full.src = '';
+  } else if (isVideo) {
     full.src = '';
     full.alt = '';
     video.poster = asset.preview || asset.thumb;
@@ -1113,13 +1137,13 @@ function openAt(index, updateUrl = true) {
     full.alt = asset.name;
   }
   $('#filename').textContent = asset.name;
-  const resolution = asset.width && asset.height ? `${asset.width}×${asset.height}` : (isVideo ? '视频' : '');
+  const resolution = asset.width && asset.height ? `${asset.width}×${asset.height}` : (isVideo ? '视频' : isAudio ? '音频' : '');
   $('#details').textContent = [asset.rel !== asset.name ? asset.rel : '', resolution, formatBytes(asset.size)].filter(Boolean).join(' · ');
   const reviewedCount = state.filtered.filter(item => item.status).length;
   $('#stagePosition').textContent = `${state.current + 1} / ${state.filtered.length} · 已审 ${reviewedCount}`;
   $('#reviewQuestion').textContent = useQuestion(asset);
   $('#reviewQuestion').dataset.use = assetTaxonomy(asset).use;
-  document.querySelector('.annotation-field')?.classList.toggle('hidden', isVideo);
+  document.querySelector('.annotation-field')?.classList.toggle('hidden', isVideo || isAudio);
   if (stageZoom.key !== keyFor(asset)) {
     resetStageZoom();
     stageZoom.key = keyFor(asset);
@@ -1149,6 +1173,8 @@ function openAt(index, updateUrl = true) {
 
 function close() {
   modal.classList.add('hidden');
+  window.ARAudio.pauseAll();
+  $('#audioFull').innerHTML = '';
   stageZoom.key = '';
   $('#full').src = '';
   const video = $('#videoFull');
@@ -1733,6 +1759,14 @@ function renderCompare() {
   overlayControl.classList.toggle('hidden', state.compareMode !== 'overlay');
   $('#compareLink').value = state.compareLinked ? 'linked' : 'independent';
 
+  if (assets.every(asset => asset.media_type === 'audio')) {
+    $('#compareHint').textContent = '点 A / B 切换，时间码保持不变';
+    gridElement.className = 'compare-grid compare-audio';
+    gridElement.innerHTML = assets.map((asset, index) =>
+      `<article class="compare-item audio">${window.ARAudio.player(asset, {group: 'library-compare', label: String.fromCharCode(65 + index)})}<div><strong>${esc(asset.name)}</strong><span>${esc(statusDisplay(asset.status))}${asset.comment ? ' · ' + esc(asset.comment) : ''}</span></div></article>`
+    ).join('');
+    return;
+  }
   if (state.compareMode === 'side') {
     $('#compareHint').textContent = '滚轮缩放 · 拖动平移 · 双击重置';
     gridElement.className = 'compare-grid';
@@ -1781,6 +1815,7 @@ function openCompare() {
 
 function closeCompare() {
   compareModal.classList.add('hidden');
+  window.ARAudio.pauseAll();
   if (modal.classList.contains('hidden')) document.body.style.overflow = '';
 }
 
@@ -2121,6 +2156,10 @@ document.onkeydown = event => {
     else if (event.key === 'Escape') close();
     else if (event.key === 'ArrowLeft') step(-1);
     else if (event.key === 'ArrowRight') step(1);
+    else if (event.key === ' ' && !$('#audioFull').classList.contains('hidden')) {
+      event.preventDefault();
+      $('#audioFull .wave-play')?.click();
+    }
     else if (event.ctrlKey || event.metaKey || event.altKey) return;
     else if (event.key.toLowerCase() === 'n') {
       event.preventDefault();
@@ -2190,7 +2229,11 @@ window.AR = Object.assign(window.AR || {}, {
     currentProject: () => currentProject(),
     collectionsFor: project => scopedCollections(project),
     pendingFor: project => pendingCount(scopedCollections(project)),
-    setProject: project => (projectNames().includes(project) ? setProjectScope(project) : Promise.resolve()),
+    setProject: project => {
+      railProject = projectNames().includes(project) ? project : '';
+      renderRail();
+      return Promise.resolve();
+    },
     openCollection: slug => switchCollection(slug),
     syncUrl: () => libraryUrl(isSingleCollectionScope() && state.active ? collectionUrl(state.active) : '/'),
     toast,

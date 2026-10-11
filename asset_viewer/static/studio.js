@@ -94,6 +94,8 @@ function applyStyles(root) {
 
 function media(item, size = 'preview', attrs = '') {
   if (!item) return '<div class="media-empty"></div>';
+  // Thumbnails of audio are server-drawn waveforms; anything larger is a real player.
+  if (item.media_type === 'audio') return size === 'thumb' ? `<img src="${esc(item.thumb)}" alt="" loading="lazy">` : window.ARAudio.player(item);
   if (item.media_type === 'video') return `<video src="${esc(item.file)}" poster="${esc(item.thumb)}" preload="metadata" controls playsinline ${attrs}></video>`;
   return `<img src="${esc(item[size] || item.thumb)}" alt="" loading="lazy" decoding="async" ${attrs}>`;
 }
@@ -251,7 +253,7 @@ function stageTrack(stages) {
 function assetCard(item) {
   const next = item.next || {};
   return `<a class="work-card" href="/#/a/${esc(item.asset.key)}" data-go="#/a/${esc(item.asset.key)}">
-    <figure class="work-cover">${item.cover ? media(item.cover, 'preview') : `<div class="cover-empty"><span>${esc(item.asset.name.charAt(0))}</span></div>`}
+    <figure class="work-cover">${item.cover ? media(item.cover, item.cover.media_type === 'audio' ? 'thumb' : 'preview') : `<div class="cover-empty"><span>${esc(item.asset.name.charAt(0))}</span></div>`}
       ${item.cover ? `<figcaption>${esc(item.cover.label)}</figcaption>` : ''}</figure>
     <div class="work-body">
       <div class="work-title"><strong>${esc(item.asset.name)}</strong><span>${esc(item.asset.kind_label)}</span></div>
@@ -345,7 +347,7 @@ function nextAction(detail) {
   const decision = next.decision;
   if (!decision) return '';
   if (decision.type === 'select') return `<button type="button" class="button primary" data-open-view="${esc(decision.view)}">去选择</button>`;
-  if (decision.type === 'lock') return '<button type="button" class="button primary" data-lock>确认整套设计</button>';
+  if (decision.type === 'lock') return `<button type="button" class="button primary" data-lock>${detail.asset.audio ? '确认听感定稿' : '确认整套设计'}</button>`;
   if (decision.type === 'accept') return `<button type="button" class="button primary" data-scroll-stage="${esc(decision.stage)}">去验收</button>`;
   return '';
 }
@@ -358,10 +360,11 @@ function viewCard(view, detail) {
     selected: `已选 ${current?.label || ''} · 待定稿`,
     updated: `有新版本`,
     choose: `${view.revisions.filter(r => r.state === 'candidate').length} 个候选待选`,
-    missing: '缺少设计稿',
+    single: `${current?.label || ''} · 随定稿确认`,
+    missing: detail.asset.audio ? '缺少试听片段' : '缺少设计稿',
   }[view.status];
   return `<article class="view-card ${esc(view.status)}" data-view-card="${esc(view.view)}" tabindex="0" aria-label="${esc(view.label)}">
-    <figure class="view-figure">${current ? media(current, 'preview') : `<div class="view-missing"><span>＋</span><small>拖入或上传${esc(view.label)}设计稿</small></div>`}
+    <figure class="view-figure">${current ? media(current, 'preview') : `<div class="view-missing"><span>＋</span><small>拖入或上传${esc(view.label)}${detail.asset.audio ? '试听片段' : '设计稿'}</small></div>`}
       ${current?.locked ? '<span class="lock-badge" title="定稿">定稿</span>' : ''}</figure>
     <div class="view-meta">
       <div class="view-title"><strong>${esc(view.label)}</strong>${view.required ? '' : '<span class="tag">可选</span>'}</div>
@@ -393,7 +396,7 @@ function stageCard(stage, detail) {
       <form class="return-form hidden" data-return-form="${esc(stage.stage)}"><input name="note" maxlength="500" placeholder="说明哪里要改" aria-label="退回说明"><button type="submit" class="button">退回</button></form>`}
     </div>
     <div class="stage-media">
-      ${design ? designStrip(detail) : files.length ? `<div class="evidence-row">${files.slice(-4).map(item => `<button type="button" class="evidence" data-evidence="${esc(item.evidence_id)}" title="${esc(item.caption || item.rel || '')}">${media(item, 'thumb')}${item.kind !== 'image' ? `<span class="kind">${item.kind === 'timelapse' ? '延时' : '视频'}</span>` : ''}</button>`).join('')}${files.length > 4 ? `<span class="evidence-more">+${files.length - 4}</span>` : ''}</div>`
+      ${design ? designStrip(detail) : files.length ? `<div class="evidence-row">${files.slice(-4).map(item => `<button type="button" class="evidence" data-evidence="${esc(item.evidence_id)}" title="${esc(item.caption || item.rel || '')}">${media(item, 'thumb')}${item.kind !== 'image' ? `<span class="kind">${{timelapse: '延时', audio: '音频'}[item.kind] || '视频'}</span>` : ''}</button>`).join('')}${files.length > 4 ? `<span class="evidence-more">+${files.length - 4}</span>` : ''}</div>`
         : `<div class="evidence-missing" data-drop-stage="${esc(stage.stage)}">暂无素材 · 拖入截图或视频</div>`}
       ${sources.length ? `<ul class="source-list">${sources.map(item => `<li><span>来源</span>${esc(item.caption || item.source)}${item.caption && item.source ? ` <code>${esc(item.source)}</code>` : ''}</li>`).join('')}</ul>` : ''}
     </div>
@@ -402,7 +405,7 @@ function stageCard(stage, detail) {
 
 function designStrip(detail) {
   const views = detail.views.filter(view => view.current);
-  if (!views.length) return '<div class="evidence-missing">还没有设计稿</div>';
+  if (!views.length) return `<div class="evidence-missing">${detail.asset.audio ? '还没有试听片段' : '还没有设计稿'}</div>`;
   return `<div class="evidence-row">${views.slice(0, 4).map(view => `<button type="button" class="evidence" data-open-view="${esc(view.view)}" title="${esc(view.label)} ${esc(view.current.label)}">${media(view.current, 'thumb')}<span class="kind">${esc(view.label)}</span></button>`).join('')}</div>`;
 }
 
@@ -443,7 +446,7 @@ const EVENT_TEXT = {
   revision_archived: d => `清理 ${d.view} v${d.number}（可恢复）`,
   design_locked: d => `确认定稿 D${d.number}`,
   stage_updated: d => `${(S.meta?.stages.find(s => s.stage === d.stage) || {}).label || d.stage}：${STATUS_TEXT[d.old] || d.old} → ${STATUS_TEXT[d.new] || d.new}${d.next_step ? `（${d.next_step}）` : ''}`,
-  evidence_added: d => `${(S.meta?.stages.find(s => s.stage === d.stage) || {}).label || d.stage} 新增${d.kind === 'source' ? '来源' : d.kind === 'video' ? '视频' : d.kind === 'timelapse' ? '延时' : '截图'}${d.caption ? `：${d.caption}` : ''}`,
+  evidence_added: d => `${(S.meta?.stages.find(s => s.stage === d.stage) || {}).label || d.stage} 新增${d.kind === 'source' ? '来源' : d.kind === 'video' ? '视频' : d.kind === 'audio' ? '录音' : d.kind === 'timelapse' ? '延时' : '截图'}${d.caption ? `：${d.caption}` : ''}`,
   evidence_removed: d => `移除 ${d.stage} 证据`,
 };
 const ACTOR_TEXT = {owner: '你', agent: 'Agent', system: '自动'};
@@ -461,7 +464,7 @@ function renderAsset() {
   $('#studioView').innerHTML = `
     <nav class="crumbs"><a href="/#/" data-go="#/">${esc(asset.project)}</a>${asset.scene ? `<span>/</span><span>${esc(asset.scene)}</span>` : ''}</nav>
     <section class="asset-hero">
-      <figure class="hero-media">${cover ? media(cover, 'preview') : `<div class="cover-empty large"><span>${esc(asset.name.charAt(0))}</span></div>`}
+      <figure class="hero-media">${cover ? (cover.media_type === 'audio' ? `<img src="${esc(cover.preview)}" alt="">${media(cover, 'preview')}` : media(cover, 'preview')) : `<div class="cover-empty large"><span>${esc(asset.name.charAt(0))}</span></div>`}
         ${cover ? `<figcaption><span>当前结果</span>${esc(cover.label)}${cover.caption ? ` · ${esc(cover.caption)}` : ''}</figcaption>` : ''}</figure>
       <div class="hero-info">
         <span class="eyebrow">${esc(asset.kind_label)}</span>
@@ -484,7 +487,7 @@ function renderAsset() {
       <div class="block-head"><h2>设计</h2><span class="muted">${viewCount} 个视图</span>
         ${detail.lock ? `<span class="lock-chip current">定稿 ${esc(detail.lock.name)} · ${esc(day(detail.lock.created_at))}</span>` : ''}
         <span class="spacer"></span>
-        ${detail.decisions.some(d => d.type === 'lock') ? '<button type="button" class="button primary" data-lock>确认整套设计</button>' : ''}
+        ${detail.decisions.some(d => d.type === 'lock') ? `<button type="button" class="button primary" data-lock>${detail.asset.audio ? '确认听感定稿' : '确认整套设计'}</button>` : ''}
         ${cleanable(detail) ? '<button type="button" class="button quiet" data-cleanup title="移到回收目录，可恢复">清理未采用</button>' : ''}
         <button type="button" class="button quiet" data-add-view>添加视图</button>
       </div>
@@ -526,6 +529,7 @@ function openViewer(viewKey) {
 
 function closeViewer() {
   if (!S.viewer) return;
+  window.ARAudio?.pauseAll();
   S.viewer = null;
   $('#viewStudio').classList.add('hidden');
   $('#viewStudio').innerHTML = '';
@@ -546,8 +550,14 @@ function renderViewer() {
   const current = all.find(r => r.revision_id === S.viewer.revision) || shown[shown.length - 1];
   if (current) S.viewer.revision = current.revision_id;
   const other = S.viewer.compare ? all.find(r => r.revision_id === S.viewer.compare) : null;
-  const mode = other ? S.viewer.mode : 'single';
-  const stage = !current ? `<div class="vs-empty"><p>「${esc(view.label)}」还没有设计稿</p><button type="button" class="button primary" data-upload-view="${esc(view.view)}">上传第一版</button></div>`
+  const audio = current?.media_type === 'audio';
+  const mode = other ? (audio && S.viewer.mode === 'wipe' ? 'side' : S.viewer.mode) : 'single';
+  const stage = !current ? undefined
+    : audio ? `<div class="vs-audio">${mode === 'side'
+        ? `<p class="vs-audio-hint">点 A / B 切换，时间码保持不变</p>${window.ARAudio.player(other, {group: 'vs-ab', label: `A ${other.label}`})}${window.ARAudio.player(current, {group: 'vs-ab', label: `B ${current.label}`})}`
+        : window.ARAudio.player(current)}</div>`
+    : undefined;
+  const visual = stage !== undefined ? stage : !current ? `<div class="vs-empty"><p>「${esc(view.label)}」还没有${S.asset.asset.audio ? '试听片段' : '设计稿'}</p><button type="button" class="button primary" data-upload-view="${esc(view.view)}">上传第一版</button></div>`
     : mode === 'side' ? `<div class="vs-side"><figure>${media(other, 'preview')}<figcaption>${esc(other.label)}</figcaption></figure><figure>${media(current, 'preview')}<figcaption>${esc(current.label)}</figcaption></figure></div>`
     : mode === 'wipe' ? `<div class="vs-wipe" data-cut="${S.viewer.cut ?? 50}"><img src="${esc(current.preview)}" alt=""><img class="top" src="${esc(other.preview)}" alt=""><span class="wipe-line"></span><span class="wipe-tag left">${esc(other.label)}</span><span class="wipe-tag right">${esc(current.label)}</span></div>`
     : `<div class="vs-figure${S.viewer.pinMode ? ' pinning' : ''}">${media(current, 'preview', 'draggable="false"')}<div class="vs-pins">${pinItems()}</div></div>`;
@@ -557,12 +567,14 @@ function renderViewer() {
       <div class="vs-versions" role="tablist">${shown.map(r => `<button type="button" role="tab" class="vs-ver${r.revision_id === current?.revision_id ? ' active' : ''}${r.selected ? ' selected' : ''}${r.state === 'culled' ? ' culled' : ''}" data-rev="${esc(r.revision_id)}" aria-selected="${r.revision_id === current?.revision_id}">${esc(r.label)}${r.selected ? '<i class="sel-dot" title="已选用"></i>' : ''}</button>`).join('')}
         <button type="button" class="vs-ver add" data-upload-view="${esc(view.view)}" title="上传新版本">＋</button></div>
       <div class="vs-tools">
-        ${all.filter(r => r.state === 'candidate').length > 1 ? `<div class="segmented" role="group" aria-label="对比"><button type="button" data-mode="single" aria-pressed="${mode === 'single'}">单张</button><button type="button" data-mode="side" aria-pressed="${mode === 'side'}">并排</button><button type="button" data-mode="wipe" aria-pressed="${mode === 'wipe'}">滑动</button></div>` : ''}
+        ${all.filter(r => r.state === 'candidate').length > 1 ? (audio
+          ? `<div class="segmented" role="group" aria-label="对比"><button type="button" data-mode="single" aria-pressed="${mode === 'single'}">单个</button><button type="button" data-mode="side" aria-pressed="${mode === 'side'}">A / B</button></div>`
+          : `<div class="segmented" role="group" aria-label="对比"><button type="button" data-mode="single" aria-pressed="${mode === 'single'}">单张</button><button type="button" data-mode="side" aria-pressed="${mode === 'side'}">并排</button><button type="button" data-mode="wipe" aria-pressed="${mode === 'wipe'}">滑动</button></div>`) : ''}
         <button type="button" class="icon-btn" data-close-viewer aria-label="关闭">×</button>
       </div>
     </header>
     <div class="vs-body">
-      <section class="vs-stage" data-stage-area>${stage}</section>
+      <section class="vs-stage" data-stage-area>${visual}</section>
       <aside class="vs-panel">${current ? viewerPanel(view, current, culled) : ''}</aside>
     </div>
     <nav class="vs-film">${shown.map(r => `<button type="button" class="film${r.revision_id === current?.revision_id ? ' active' : ''}${r.revision_id === other?.revision_id ? ' compare' : ''}${r.state === 'culled' ? ' culled' : ''}" data-rev="${esc(r.revision_id)}" title="${esc(r.label)}">${media(r, 'thumb')}<span>${esc(r.label)}${r.note ? ` · ${esc(r.note.split(/[，,。:：]/)[0].slice(0, 14))}` : ''}${r.selected ? ' ●' : ''}</span></button>`).join('')}</nav>`;
@@ -589,7 +601,7 @@ function viewerPanel(view, current, culled) {
     </div>
     ${others.length ? `<label class="vs-field"><span>对比</span><select data-compare-pick><option value="">选择另一个版本</option>${others.map(r => `<option value="${esc(r.revision_id)}"${r.revision_id === S.viewer.compare ? ' selected' : ''}>${esc(r.label)}${r.selected ? '（已选用）' : ''}</option>`).join('')}</select></label>` : ''}
     <label class="vs-field"><span>意见</span><textarea data-comment maxlength="10000" placeholder="这一版哪里要改">${esc(current.comment)}</textarea><small class="save-hint" data-comment-state></small></label>
-    <div class="vs-field"><span>标注 <button type="button" class="text-btn${S.viewer.pinMode ? ' on' : ''}" data-pin-mode>${S.viewer.pinMode ? '点击图片放置…' : '在图上标注'}</button></span>
+    <div class="vs-field${current.media_type === 'audio' ? ' hidden' : ''}"><span>标注 <button type="button" class="text-btn${S.viewer.pinMode ? ' on' : ''}" data-pin-mode>${S.viewer.pinMode ? '点击图片放置…' : '在图上标注'}</button></span>
       <ol class="note-list">${noteItems()}</ol></div>
     ${culled.length ? `<button type="button" class="text-btn" data-toggle-culled>${S.showCulled ? '隐藏' : '显示'}已筛除的 ${culled.length} 个版本</button>` : ''}
     <p class="vs-keys"><kbd>←</kbd><kbd>→</kbd> 切换版本 · <kbd>↵</kbd> 选用 · <kbd>Esc</kbd> 返回</p>`;
@@ -685,17 +697,18 @@ function openDialog(html, onSubmit) {
 }
 
 function closeDialog() {
+  window.ARAudio?.pauseAll();
   $('#dialog').classList.add('hidden');
   $('#dialog').innerHTML = '';
 }
 
 function lockDialog() {
   const detail = S.asset;
-  const chosen = detail.views.filter(view => view.selected_revision_id);
-  const missing = detail.views.filter(view => view.required && !view.selected_revision_id);
+  const chosen = detail.views.filter(view => view.selected_revision_id || (view.required && view.status === 'single'));
+  const missing = detail.views.filter(view => view.required && !view.selected_revision_id && view.status !== 'single');
   const number = detail.locks.length + 1;
   openDialog(`
-    <h2>确认整套设计 · D${number}</h2>
+    <h2>${detail.asset.audio ? '确认听感定稿' : '确认整套设计'} · D${number}</h2>
     <p class="dialog-lead">这些版本将成为制作依据。Coding Agent 只会读取定稿中的文件；之后改动设计需要再次定稿。</p>
     <div class="lock-preview">${chosen.map(view => `<figure>${media(view.current, 'thumb')}<figcaption><strong>${esc(view.label)}</strong> ${esc(view.current.label)}</figcaption></figure>`).join('')}</div>
     ${missing.length ? `<p class="vs-warn">还缺：${missing.map(v => esc(v.label)).join('、')}</p>` : ''}
@@ -828,7 +841,7 @@ async function evidenceViewer(evidenceId) {
   const item = S.asset.stages.flatMap(stage => stage.evidence).find(e => e.evidence_id === evidenceId);
   if (!item) return;
   const stage = S.asset.stages.find(s => s.stage === item.stage);
-  openDialog(`<div class="evidence-view">${item.media_type === 'video' ? `<video src="${esc(item.file)}" controls autoplay playsinline></video>` : `<img src="${esc(item.preview)}" alt="">`}</div>
+  openDialog(`<div class="evidence-view">${item.media_type === 'video' ? `<video src="${esc(item.file)}" controls autoplay playsinline></video>` : item.media_type === 'audio' ? media(item) : `<img src="${esc(item.preview)}" alt="">`}</div>
     <div class="evidence-caption"><div><strong>${esc(stage?.label || '')}</strong> · ${esc(item.caption || item.rel || '')}<br><small class="muted">${esc(stamp(item.created_at))} · ${esc(ORIGIN_TEXT[item.origin] || item.origin)}</small></div>
     <div class="dialog-actions"><a class="button quiet" href="${esc(item.file)}" target="_blank" rel="noopener">原文件</a><button type="button" class="button quiet" data-remove-evidence="${esc(item.evidence_id)}">移出此阶段</button><button type="submit" class="button">关闭</button></div></div>`,
     async () => {});
@@ -946,12 +959,12 @@ document.addEventListener('click', event => {
   }
   const uploadStage = target.closest('[data-upload-stage]');
   if (uploadStage) {
-    pickFiles('image/*,video/*').then(files => uploadMany(files, {stage: uploadStage.dataset.uploadStage})).catch(fail);
+    pickFiles('image/*,video/*,audio/*').then(files => uploadMany(files, {stage: uploadStage.dataset.uploadStage})).catch(fail);
     return;
   }
   const uploadView = target.closest('[data-upload-view]');
   if (uploadView) {
-    pickFiles('image/*', false).then(files => uploadMany(files, {view: uploadView.dataset.uploadView})).catch(fail);
+    pickFiles('image/*,audio/*', false).then(files => uploadMany(files, {view: uploadView.dataset.uploadView})).catch(fail);
     return;
   }
   // View studio
@@ -1096,6 +1109,11 @@ document.addEventListener('keydown', event => {
     return;
   }
   if (editing || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.key === ' ' && $('#viewStudio .wave-play')) {
+    event.preventDefault();
+    ($('#viewStudio .wave-player.ab-active .wave-play') || $('#viewStudio .wave-player.playing .wave-play') || $('#viewStudio .wave-play')).click();
+    return;
+  }
   if (event.key === 'ArrowRight') { event.preventDefault(); stepVersion(1); }
   else if (event.key === 'ArrowLeft') { event.preventDefault(); stepVersion(-1); }
   else if (event.key === 'Enter') {

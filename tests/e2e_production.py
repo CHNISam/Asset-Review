@@ -93,11 +93,10 @@ def main() -> None:
                 page.locator('#viewStudio [data-mode="side"]').click()
                 shoot(page, shots, "03-front-compare")
                 page.locator('#viewStudio [data-mode="single"]').click()
-                for view in ("front", "side", "top"):
-                    expect(page).to_have_url(f"{base}/#/a/music-hall/v/{view}")
-                    with page.expect_response(lambda r: "/api/production/select" in r.url and r.ok):
-                        page.keyboard.press("Enter")
-                    page.wait_for_timeout(700)
+                # Side and top have a single candidate each: they are confirmed with the lock, not chosen.
+                with page.expect_response(lambda r: "/api/production/select" in r.url and r.ok):
+                    page.keyboard.press("Enter")
+                page.wait_for_timeout(500)
                 page.keyboard.press("Escape")
                 # The optional detail view is not queued as a decision, but can still be chosen.
                 page.locator('[data-view-card="detail"]').click()

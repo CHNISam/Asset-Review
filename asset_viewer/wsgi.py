@@ -18,10 +18,12 @@ from waitress import serve as waitress_serve
 from . import __version__
 from .activity import activity_feed
 from .handoff import approved_handoff
+from .audio import AUDIO_EXTS, peaks_for
 from . import production_api
 from .app import (
     BASE_CSP,
     LOOPBACK_HOSTS,
+    byte_range,
     STATIC,
     capability_document,
     host_is_trusted,
@@ -163,6 +165,33 @@ def _file_response(
     return chunks()
 
 
+def _media_response(environ: dict[str, Any], start_response: StartResponse, path: Path, content_type: str, extra: dict[str, str]) -> Iterable[bytes]:
+    """Originals with Range support so audio/video can seek and A/B at the same time code."""
+    size = path.stat().st_size
+    span = byte_range(_header(environ, "Range") or None, size)
+    if span is False:
+        return _bytes_response(start_response, 416, "text/plain; charset=utf-8", "Range not satisfiable", {"Content-Range": f"bytes */{size}"})
+    if span is None:
+        return _file_response(environ, start_response, path, content_type, extra | {"Accept-Ranges": "bytes"})
+    start, end = span
+    headers = [("Content-Type", content_type), ("Content-Length", str(end - start + 1)), *security_headers()]
+    headers.extend((extra | {"Accept-Ranges": "bytes", "Content-Range": f"bytes {start}-{end}/{size}"}).items())
+    start_response("206 Partial Content", headers)
+
+    def chunks() -> Iterable[bytes]:
+        with path.open("rb") as handle:
+            handle.seek(start)
+            remaining = end - start + 1
+            while remaining:
+                chunk = handle.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+
+    return chunks()
+
+
 class AssetViewerWSGI:
     """WSGI application used by the production Waitress serving path."""
 
@@ -267,6 +296,8 @@ class AssetViewerWSGI:
             return self._static(environ, start_response, "app.js", "application/javascript; charset=utf-8")
         if path == "/studio.js":
             return self._static(environ, start_response, "studio.js", "application/javascript; charset=utf-8")
+        if path == "/audio.js":
+            return self._static(environ, start_response, "audio.js", "application/javascript; charset=utf-8")
         production = production_api.handle_get(path, str(environ.get("QUERY_STRING") or ""))
         if production is not None:
             return _json_response(start_response, *production)
@@ -387,7 +418,7 @@ class AssetViewerWSGI:
             if not root_for(collection) or not rel:
                 return _json_response(start_response, 400, {"error": "collection plus rel or asset_id are required"})
             return _json_response(start_response, 200, {"collection": collection, "rel": rel, "events": review_history(collection, rel)})
-        if path.startswith("/asset/file/") or path.startswith("/asset/thumb/") or path.startswith("/asset/preview/"):
+        if path.startswith(("/asset/file/", "/asset/thumb/", "/asset/preview/", "/asset/peaks/")):
             parts = path.split("/", 4)
             if len(parts) != 5:
                 return _bytes_response(start_response, 404, "text/plain; charset=utf-8", "Not found")
@@ -395,6 +426,10 @@ class AssetViewerWSGI:
             source = safe_file(slug, relative)
             if not source:
                 return _bytes_response(start_response, 404, "text/plain; charset=utf-8", "Not found")
+            if kind == "peaks":
+                if source.suffix.lower() not in AUDIO_EXTS:
+                    return _json_response(start_response, 404, {"error": "not audio"})
+                return _json_response(start_response, 200, peaks_for(source), {"Cache-Control": "private, max-age=86400"})
             if kind == "thumb":
                 return _bytes_response(start_response, 200, "image/jpeg", make_thumbnail(source), {"Cache-Control": "private, max-age=86400"})
             if kind == "preview":
@@ -403,7 +438,7 @@ class AssetViewerWSGI:
                 filename = urllib.parse.quote(source.name, safe="")
                 return _file_response(environ, start_response, source, "application/octet-stream", {"Cache-Control": "private, max-age=3600", "Content-Disposition": f"attachment; filename*=UTF-8''{filename}"})
             content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
-            return _file_response(environ, start_response, source, content_type, {"Cache-Control": "private, max-age=3600"})
+            return _media_response(environ, start_response, source, content_type, {"Cache-Control": "private, max-age=3600"})
         return _bytes_response(start_response, 404, "text/plain; charset=utf-8", "Not found")
 
     def _static(self, environ: dict[str, Any], start_response: StartResponse, name: str, content_type: str) -> Iterable[bytes]:

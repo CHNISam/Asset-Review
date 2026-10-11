@@ -121,6 +121,10 @@ asset-viewer annotate brand-concepts <asset-id> point 0.42 0.61 "Remove this obj
 
 Accepts `collection` plus `asset_id` (preferred) or `rel`. Returns the asset's decision/comment history, including undone actions and system content-change events.
 
+## Media
+
+`GET /asset/file/<collection>/<rel>` honours `Range: bytes=` (206 / 416). `GET /asset/peaks/<collection>/<rel>` returns cached waveform peaks for audio: `{duration, rate, channels, bits, peaks[]}`.
+
 ## Production APIs
 
 Production assets point at catalog files by stable `asset_id`; files never move except through owner cleanup.

@@ -793,3 +793,38 @@ button.decision.reject.decision-active{background:var(--bad-fill);color:#fff}
   .compare-grid{grid-template-columns:1fr}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* Audio: one player everywhere (audio.js) */
+.wave-player{--wave-idle:rgba(40,32,24,.28);--wave-played:var(--ink);display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;width:100%;padding:10px 14px 10px 10px;border-radius:14px;background:var(--surface);box-shadow:var(--shadow-sm),0 0 0 1px var(--line)}
+:root[data-theme="dark"] .wave-player{--wave-idle:rgba(255,250,240,.28)}
+.wave-player audio{display:none}
+.wave-play{display:inline-flex;align-items:center;gap:8px;min-width:40px;min-height:40px;padding:0 12px;border-radius:999px;background:var(--ink);color:var(--on-ink)}
+.wave-play:hover:not(:disabled){background:var(--ink);opacity:.86}
+.wave-play i{width:0;height:0;border-left:10px solid currentColor;border-top:6px solid transparent;border-bottom:6px solid transparent}
+.wave-player.playing .wave-play i{width:10px;height:12px;border:0;background:linear-gradient(90deg,currentColor 0 35%,transparent 35% 65%,currentColor 65%)}
+.wave-play b{font-weight:600;font-size:13px}
+.wave-track{position:relative;height:56px;cursor:pointer}
+.wave-track canvas{display:block;width:100%;height:100%}
+.wave-head{position:absolute;top:0;bottom:0;left:0;width:2px;margin-left:-1px;background:var(--owner);opacity:0;pointer-events:none}
+.wave-player.playing .wave-head,.wave-player.ab-active .wave-head{opacity:1}
+.wave-time{min-width:44px;color:var(--muted);font-size:12px;text-align:right;font-variant-numeric:tabular-nums}
+.wave-player.ab-active{box-shadow:0 0 0 2px var(--accent)}
+.wave-player.compact{gap:8px;padding:6px 10px 6px 6px;border-radius:999px;background:rgba(255,255,255,.92);box-shadow:0 2px 10px rgba(0,0,0,.12)}
+.wave-player.compact .wave-play{min-width:30px;min-height:30px;padding:0 9px}
+.wave-player.compact .wave-track{height:26px}
+.wave-player.compact .wave-time{min-width:34px;font-size:11px}
+.card-listen{position:absolute;left:10px;right:10px;bottom:10px;z-index:2}
+.card.media-audio .card-actions{bottom:56px}  /* the listen bar never moves under the pointer */
+.audio-full{width:min(980px,100%);padding:0 20px}
+.audio-full .wave-track{height:160px}
+.compare-grid.compare-audio{display:grid;grid-template-columns:1fr;align-content:center;gap:18px;padding:0 6%}
+.compare-item.audio{background:transparent;overflow:visible}
+.compare-item.audio .wave-track{height:120px}
+.vs-audio{display:grid;gap:16px;width:min(1000px,100%)}
+.vs-audio .wave-track{height:150px}
+.vs-audio-hint{margin:0;color:var(--muted);font-size:13px;text-align:center}
+.view-figure .wave-player,.hero-media .wave-player{position:absolute;left:12px;right:12px;bottom:12px;width:auto}
+.view-figure>.wave-player{top:50%;bottom:auto;transform:translateY(-50%)}
+.chapter-item .wave-player{margin-bottom:4px}
+.chapter-grid .chapter-item:first-child .wave-player .wave-track{height:110px}
+.evidence-view .wave-player{margin:24px;width:calc(100% - 48px)}

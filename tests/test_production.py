@@ -59,7 +59,9 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(top["v3"]["state"], "culled")
         self.assertIn("分辨率过低", top["v3"]["reason"])
         self.assertEqual(production.discover("music-hall")["added"], [])
-        self.assertEqual([d["type"] for d in detail["decisions"]], ["select", "select", "select"])
+        # Only the front view has something to choose between; single candidates ride along with the lock.
+        self.assertEqual([(d["type"], d.get("view")) for d in detail["decisions"]], [("select", "front")])
+        self.assertEqual(next(v for v in detail["views"] if v["view"] == "side")["status"], "single")
         self.assertTrue(detail["next"]["owner"])
         self.assertEqual(detail["gates"]["visual"]["state"], "progress")
 
@@ -89,6 +91,17 @@ class ProductionTests(unittest.TestCase):
         stale = production.design_lock("music-hall")
         self.assertFalse(stale["verified"])
         self.assertIn("side: bytes changed since lock", stale["problems"])
+
+    def test_single_candidate_views_are_confirmed_by_the_lock(self):
+        production.discover("music-hall")
+        detail = production.asset_detail("music-hall")
+        v3 = next(r for r in self.revisions(detail, "front") if r["label"] == "v3")
+        detail = production.select_revision("music-hall", "front", v3["revision_id"])
+        self.assertEqual([d["type"] for d in detail["decisions"]], ["lock"])
+        detail = production.lock_design("music-hall")
+        lock = production.design_lock("music-hall")
+        self.assertEqual({v["view"]: v["revision"] for v in lock["views"]}, {"front": "v3", "side": "v1", "top": "v1"})
+        self.assertEqual(detail["decisions"], [])
 
     def test_new_revision_after_selection_is_surfaced_and_relock_supersedes(self):
         production.discover("music-hall")
