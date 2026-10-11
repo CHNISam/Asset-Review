@@ -1371,7 +1371,7 @@ def _compose(data: dict[str, Any]) -> dict[str, Any]:
                      or next((v for v in views if v["current"] and v["current"].get("thumb")), None))
         if pick_view:
             design_pick = pick_view["current"]
-            cover = {"stage": "design", "label": "设计", "caption": f"{pick_view['label']} {design_pick['label']}",
+            cover = {"stage": "design", "label": stage_text(asset["kind"], "design")[0], "caption": f"{pick_view['label']} {design_pick['label']}",
                      **{k: design_pick[k] for k in ("thumb", "preview", "file", "media_type")}}
 
     chapters = []
