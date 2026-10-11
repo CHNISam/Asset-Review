@@ -27,13 +27,23 @@ asset-viewer add "D:\Projects\Example\art\concepts" "Meadow concepts" --group "E
 asset-viewer add "D:\Projects\Example\captures" "Meadow captures" --group "Example Game / Meadow / Runtime"
 ```
 
-Use the last group segment as the content purpose: `Reference`, `Design`, `Runtime`, or `Asset` (Chinese equivalents are supported). The UI keeps project/scene navigation and content purpose separate from the native `Approved` / `Maybe` / `Rejected` review state. Unknown material remains **未分类** rather than being guessed.
+Groups read `Project / Scene / Topic / Use`. The sidebar shows one project at a time (switch from the top), then scenes and topics. Every collection should end with a use, because the use is the decision being asked of the reviewer:
+
+| Use | 中文 | Reviewer is asked | Counts as pending |
+|---|---|---|---|
+| `Reference` | 参考 | 方向对吗？ | yes |
+| `Design` | 设计 | 能进制作吗？ | yes |
+| `Runtime` | 实机 | 实现到位吗？ | yes |
+| `Asset` | 资产 | 能交付吗？ | yes |
+| `Archive` / `Evidence` | 存档 | 无需审核, kept as a record only | no; skipped by 快审 |
+
+Material without a declared use shows as **未标注**; it is never guessed. Register task evidence that nobody needs to judge as `Archive`, so it stays searchable without landing in anyone's review queue. Re-running `asset-viewer add` on an already-registered folder changes only its group; the slug and review history are kept. Use stays separate from the native `Approved` / `Maybe` / `Rejected` review state.
 
 For a project-owned reusable declaration, commit a relative `.asset-viewer.toml` and run `asset-viewer project-sync`; see [Project-native registration and metadata](#project-native-registration-and-metadata).
 
 ### Fast human review
 
-The **快速审核** button opens a focused culling view for the current collection or filter result. Candidate design material is prioritized, while reference, runtime captures, and recordings stay in ordinary browse mode unless a reviewer deliberately opens them. Use the fixed mouse actions **保留 / 待修改 / 不采用**, or `1` / `2` / `3`; use arrows to move and `Ctrl+Z` to safely undo the most recent quick-review decision. Notes, spatial annotations, comparison, source details, history, and version families continue to use the native review surface on demand.
+The **快审** button opens a focused culling view for the current collection or filter result. Design material comes first and archive material is skipped. Decide with **通过 / 待定 / 拒绝** or `1` / `2` / `3` (adjacent keys, one hand); use arrows to move, `N` for a note, and `Ctrl+Z` to safely undo the most recent quick-review decision. The same `1` / `2` / `3` work on a hovered or focused grid card and in the detail view, where `0` clears the decision and `Z` toggles 100%. Notes, spatial annotations, comparison, source details, history, and version families continue to use the native review surface on demand.
 
 ## Human and agent boundary
 

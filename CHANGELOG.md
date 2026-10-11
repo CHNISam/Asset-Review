@@ -4,6 +4,13 @@ All notable changes to Asset Viewer will be documented here.
 
 ## Unreleased
 
+- Make the use field state the decision it asks for: 参考 方向对吗？ / 设计 能进制作吗？ / 实机 实现到位吗？ / 资产 能交付吗？, shown above the decision buttons and in quick review. Add `Archive` / `Evidence` (存档) for task evidence that nobody needs to judge: it is excluded from pending counts, progress and quick review. Undeclared material reads 未标注.
+- Redesign the sidebar around one project at a time: a project switcher at the top (with search once there are many projects), then collapsible scenes and topics. A topic with a single collection becomes one row, and a multi-collection topic header opens all of them together (new topic scope). Right-hand numbers are real pending counts from `/api/pending`.
+- Apple-like visual pass: system font and system blue, borderless tonal controls, a segmented 素材 / 记录 / 交付 control in the top bar, translucent menus, toasts and palette, photo tiles without card chrome, and black stages for detail view and quick review. The toolbar is now a single row.
+- Shorten UI labels to one term per concept: statuses 通过 / 待定 / 拒绝 / 待审; feedback is always 意见 and positional notes 标注; the handoff tab becomes 交付; menus use short verbs.
+- Unify shortcuts on adjacent keys: `1` / `2` / `3` decide and `0` clears, in quick review, the detail view, and on a hovered or focused grid card. A/M/R are retired.
+- Fix topics ending in an explicit 未分类 use splitting from their siblings, and clicking the only collection of a single-collection project not switching scope.
+
 - Rebuild the browser UI as a lighter, art-first "Asset Review" studio: neutral untinted greys so artwork carries the colour, dark/light themes that follow the system with a manual toggle, and a single token-based stylesheet replacing the layered overrides.
 - Collapse gallery chrome: status chips with live counts replace the status dropdown and summary line, the project/scene/use filters become a slim secondary row (collapsible on mobile), and a thumbnail density control is remembered per viewer.
 - Quieter cards: badges only for reviewed or new assets, a single metadata line, and scene/use chips only when a view spans collections. Hovering a card shows one-click 通过/待定/拒绝 controls; a focused card also accepts A/M/R or 1/2/3.

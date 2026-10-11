@@ -26,7 +26,8 @@ let state = {
   workspaceTab: 'gallery',
   galleryFilterBeforeApproved: 'all',
   scan: {},
-  scope: {kind: 'collection', project: '', scene: ''},
+  scope: {kind: 'collection', project: '', scene: '', topic: ''},
+  pending: {},
   scopeSlugs: [],
   scopeRequest: 0,
   selectionMode: false,
@@ -73,11 +74,12 @@ function toast(message, {error = false} = {}) {
   toastTimer = setTimeout(() => element.classList.remove('show'), error ? 5200 : 2200);
 }
 
-const THEME_LABELS = {'': '主题：跟随系统', dark: '主题：深色', light: '主题：浅色'};
+const THEME_LABELS = {'': '主题：自动', dark: '主题：深色', light: '主题：浅色'};
 function applyTheme(theme) {
   if (theme) document.documentElement.dataset.theme = theme;
   else delete document.documentElement.dataset.theme;
   $('#themeLabel').textContent = THEME_LABELS[theme || ''];
+  $('#themeToggle').title = THEME_LABELS[theme || ''];
 }
 
 function cycleTheme() {
@@ -100,8 +102,27 @@ const USE_LABELS = {
   design: '设计',
   runtime: '实机',
   asset: '资产',
-  uncategorized: '未分类',
+  archive: '存档',
+  uncategorized: '未标注',
 };
+
+// The question each use puts to the reviewer. Archive is evidence kept for
+// the record: it never asks for a decision and never counts as pending.
+const USE_QUESTIONS = {
+  reference: '方向对吗？',
+  design: '能进制作吗？',
+  runtime: '实现到位吗？',
+  asset: '能交付吗？',
+  archive: '无需审核',
+  uncategorized: '未标注用途',
+};
+
+const isArchive = asset => assetTaxonomy(asset).use === 'archive';
+
+function useQuestion(asset) {
+  const use = assetTaxonomy(asset).use;
+  return `${useLabel(use)} · ${USE_QUESTIONS[use]}`;
+}
 
 function useLabel(value) {
   return USE_LABELS[value] || USE_LABELS.uncategorized;
@@ -112,7 +133,7 @@ function collectionTaxonomy(collectionOrSlug) {
     ? state.collections.find(item => item.slug === collectionOrSlug) || {slug: collectionOrSlug}
     : (collectionOrSlug || {});
   const parts = String(collection.group || '').split('/').map(part => part.trim()).filter(Boolean);
-  const project = parts[0] || collection.source_project || '未分类项目';
+  const project = parts[0] || collection.source_project || '未分组';
   const scene = parts[1] || '未分类';
   // A collection may explicitly declare its content use as the final group
   // segment (for example, "Project / Scene / Reference").  Names and file
@@ -124,10 +145,12 @@ function collectionTaxonomy(collectionOrSlug) {
     design: 'design', designs: 'design', '设计': 'design',
     runtime: 'runtime', '实机': 'runtime',
     asset: 'asset', assets: 'asset', '资产': 'asset',
-    uncategorized: 'uncategorized', '未分类': 'uncategorized',
+    archive: 'archive', evidence: 'archive', '存档': 'archive', '证据': 'archive', '归档': 'archive',
+    uncategorized: 'uncategorized', '未分类': 'uncategorized', '未标注': 'uncategorized',
   };
   const use = declaredUses[declaredUse] || 'uncategorized';
-  const topicParts = use === 'uncategorized' ? parts.slice(2) : parts.slice(2, -1);
+  // Any recognised use word (including an explicit 未分类) closes the path.
+  const topicParts = parts.length > 2 && declaredUses[declaredUse] ? parts.slice(2, -1) : parts.slice(2);
   return {project, scene, topic: topicParts.join(' · ') || collection.label || '未分类', use, note: String(collection.note || '').trim()};
 }
 
@@ -186,7 +209,7 @@ function saveCurrentView() {
   state.activeSavedView = record.id;
   persistSavedViews();
   renderViewMenu();
-  toast(`已保存视图“${trimmed}”`);
+  toast(`已保存：${trimmed}`);
 }
 
 function applySavedView(id) {
@@ -290,6 +313,7 @@ function applyGalleryScope(payloads, scope) {
     kind: scope.kind || 'collection',
     project: scope.project || '',
     scene: scope.scene || '',
+    topic: scope.topic || '',
   };
   state.reviewState = state.scopeSlugs.length === 1 ? first.review_state : null;
   state.scan = state.scopeSlugs.length === 1 ? (first.scan || {}) : {};
@@ -349,7 +373,7 @@ function statusCounts() {
   }, {approved: 0, maybe: 0, rejected: 0, unreviewed: 0});
 }
 
-const STATUS_LABELS = {approved: '已通过', maybe: '待定', rejected: '已拒绝', '': '待审'};
+const STATUS_LABELS = {approved: '通过', maybe: '待定', rejected: '拒绝', '': '待审'};
 
 function statusDisplay(status) {
   return STATUS_LABELS[status || ''] || status;
@@ -395,16 +419,19 @@ function assetTypeLabel(asset) {
 function scopeTitle() {
   if (state.scope.kind === 'all') return '所有项目';
   if (state.scope.kind === 'project') return state.scope.project || '项目';
-  if (state.scope.kind === 'scene') return [state.scope.project, state.scope.scene].filter(Boolean).join(' · ') || '场景';
+  if (state.scope.kind === 'scene') return state.scope.scene || '场景';
+  if (state.scope.kind === 'topic') return state.scope.topic || '主题';
   return activeCollectionRecord()?.label || APP_NAME;
 }
 
 function scopeCaption() {
-  if (state.scope.kind === 'all') return '跨项目素材浏览';
-  if (state.scope.kind === 'project') return '项目全部场景';
-  if (state.scope.kind === 'scene') return '场景全部素材';
+  if (state.scope.kind === 'all') return '';
+  if (state.scope.kind === 'project') return '全部';
+  if (state.scope.kind === 'scene') return state.scope.project;
+  if (state.scope.kind === 'topic') return [state.scope.project, state.scope.scene].join(' · ');
   const taxonomy = collectionTaxonomy(state.active);
-  return [taxonomy.project, taxonomy.scene, useLabel(taxonomy.use)].filter(Boolean).join(' · ');
+  const topic = taxonomy.topic !== activeCollectionRecord()?.label ? taxonomy.topic : '';
+  return [taxonomy.project, taxonomy.scene, topic].filter(Boolean).join(' · ');
 }
 
 function renderWorkspaceState() {
@@ -415,11 +442,15 @@ function renderWorkspaceState() {
   $('#scopeLabel').textContent = scopeCaption();
   document.title = collection && isSingleCollectionScope() ? `${collection.label} · ${APP_NAME}` : APP_NAME;
 
-  const reviewed = state.images.length - counts.unreviewed;
-  const parts = [`${state.images.length} 项素材`, state.images.length ? `已审 ${reviewed}（${Math.round((reviewed / state.images.length) * 100)}%）` : ''];
-  if (state.reviewState?.complete) parts.push('审核已完成');
+  // Archive material is evidence, not a decision, so it never counts toward progress.
+  const reviewable = state.images.filter(asset => !isArchive(asset));
+  const reviewed = reviewable.filter(asset => asset.status).length;
+  const parts = [`${state.images.length} 项`];
+  if (reviewable.length) parts.push(`已审 ${Math.round((reviewed / reviewable.length) * 100)}%`);
+  else if (state.images.length) parts.push('存档，无需审核');
+  if (state.reviewState?.complete) parts.push('已完成');
   if (state.scan?.truncated) parts.push(`扫描未完成（${state.scan.reason || '限制'}）`);
-  $('#summary').textContent = parts.filter(Boolean).join(' · ');
+  $('#summary').textContent = parts.join(' · ');
   renderStatusChips(counts);
 
   document.querySelectorAll('[data-workspace-tab]').forEach(button => {
@@ -436,24 +467,22 @@ function renderWorkspaceState() {
   const singleCollection = isSingleCollectionScope();
   document.querySelector('.content-frame')?.classList.toggle('approved-mode', approvedMode);
   $('#approvedPanel').classList.toggle('hidden', !approvedMode);
-  $('#approvedCount').textContent = `${approved.length} 项已通过素材`;
-  $('#approvedSummaryText').textContent = approved.length
-    ? (singleCollection ? '可使用原有交接清单，不会移动或改写原文件。' : '当前为跨集合视图；请进入单个集合后导出交接清单。')
-    : '人工通过素材后，可在单个集合中交接。';
+  $('#approvedCount').textContent = `${approved.length} 项通过`;
+  $('#approvedSummaryText').textContent = approved.length ? (singleCollection ? '' : '进入单个集合后导出') : '通过后可导出';
   $('#approvedHandoff').disabled = approved.length === 0 || !singleCollection;
   $('#approvedReport').disabled = state.images.length === 0 || !singleCollection;
   const totalBytes = approved.reduce((total, asset) => total + Number(asset.size || 0), 0);
-  $('#approvedMeta').innerHTML = `<div><span>范围</span><strong>${esc(title)}</strong></div><div><span>已通过</span><strong>${approved.length}</strong></div>${totalBytes ? `<div><span>合计大小</span><strong>${esc(formatBytes(totalBytes))}</strong></div>` : ''}`;
+  $('#approvedMeta').innerHTML = `<div><span>范围</span><strong>${esc(title)}</strong></div>${totalBytes ? `<div><span>大小</span><strong>${esc(formatBytes(totalBytes))}</strong></div>` : ''}`;
 
-  if (state.workspaceTab === 'activity') $('#workspaceCount').textContent = singleCollection ? `${state.activityEvents.length} 条记录` : '按集合查看历史';
-  else if (approvedMode) $('#workspaceCount').textContent = `${approved.length} 已通过`;
-  else $('#workspaceCount').textContent = state.filtered.length === state.images.length ? '' : `显示 ${state.filtered.length} / ${state.images.length}`;
+  if (state.workspaceTab === 'activity') $('#workspaceCount').textContent = singleCollection ? `${state.activityEvents.length} 条` : '按集合查看';
+  else if (approvedMode) $('#workspaceCount').textContent = '';
+  else $('#workspaceCount').textContent = state.filtered.length === state.images.length ? '' : `${state.filtered.length} / ${state.images.length}`;
 }
 
-function scopedCollections(project = '', scene = '') {
+function scopedCollections(project = '', scene = '', topic = '') {
   return state.collections.filter(collection => {
     const taxonomy = collectionTaxonomy(collection);
-    return (!project || taxonomy.project === project) && (!scene || taxonomy.scene === scene);
+    return (!project || taxonomy.project === project) && (!scene || taxonomy.scene === scene) && (!topic || taxonomy.topic === topic);
   });
 }
 
@@ -462,8 +491,8 @@ function renderFacetControls() {
   const sceneSelect = $('#sceneFilter');
   const useSelect = $('#useFilter');
   const activeTaxonomy = collectionTaxonomy(state.active);
-  const projects = [...new Set(state.collections.map(collection => collectionTaxonomy(collection).project))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
-  const selectedProject = state.scope.kind === 'all' ? '__all__' : (['project', 'scene'].includes(state.scope.kind) ? state.scope.project : '');
+  const projects = projectNames();
+  const selectedProject = state.scope.kind === 'all' ? '__all__' : (['project', 'scene', 'topic'].includes(state.scope.kind) ? state.scope.project : '');
   const projectOptions = [
     '<option value="">当前集合</option>',
     '<option value="__all__">所有项目</option>',
@@ -475,66 +504,171 @@ function renderFacetControls() {
   const sceneProject = state.scope.kind === 'all' ? '' : (selectedProject || activeTaxonomy.project);
   const scenes = [...new Set(scopedCollections(sceneProject).map(collection => collectionTaxonomy(collection).scene))]
     .sort((a, b) => a.localeCompare(b, 'zh-CN'));
-  sceneSelect.innerHTML = `<option value="">${state.scope.kind === 'all' ? '全部项目的场景' : (sceneProject ? '全部场景' : '当前集合')}</option>` + scenes.map(scene => `<option value="${esc(scene)}">${esc(scene)}</option>`).join('');
+  sceneSelect.innerHTML = `<option value="">${sceneProject ? '全部' : '当前集合'}</option>` + scenes.map(scene => `<option value="${esc(scene)}">${esc(scene)}</option>`).join('');
   sceneSelect.disabled = state.scope.kind === 'all' || !sceneProject || scenes.length === 0;
-  sceneSelect.value = state.scope.kind === 'scene' ? state.scope.scene : '';
+  sceneSelect.value = ['scene', 'topic'].includes(state.scope.kind) ? state.scope.scene : '';
 
   const previousUse = useSelect.value || 'all';
-  useSelect.innerHTML = '<option value="all">全部用途</option>' + Object.entries(USE_LABELS)
+  useSelect.innerHTML = '<option value="all">全部</option>' + Object.entries(USE_LABELS)
     .map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
   useSelect.value = USE_LABELS[previousUse] ? previousUse : 'all';
 }
 
-function renderCollections(active) {
-  const select = $('#collection');
-  const nav = $('#collectionNav');
-  const projects = new Map();
-  for (const collection of state.collections) {
-    const taxonomy = collectionTaxonomy(collection);
-    if (!projects.has(taxonomy.project)) projects.set(taxonomy.project, new Map());
-    const scenes = projects.get(taxonomy.project);
-    if (!scenes.has(taxonomy.scene)) scenes.set(taxonomy.scene, []);
-    scenes.get(taxonomy.scene).push(collection);
-  }
+const COLLAPSED_KEY = 'asset-viewer.collapsed-sections';
+const sortZh = (a, b) => a.localeCompare(b, 'zh-CN');
 
-  const parts = [];
-  const navParts = [`<button type="button" class="scope-link${state.scope.kind === 'all' ? ' active' : ''}" data-all-projects><span class="scope-dot" aria-hidden="true"></span><span>所有项目</span><small>${state.collections.length}</small></button>`];
-  for (const [project, scenes] of [...projects].sort(([a], [b]) => a.localeCompare(b, 'zh-CN'))) {
-    const rows = [...scenes.values()].flat();
-    const isProjectActive = (state.scope.kind === 'project' || state.scope.kind === 'scene') && state.scope.project === project;
-    navParts.push(`<section class="project-node"><button type="button" class="project-link${isProjectActive ? ' active' : ''}" data-project="${esc(project)}" title="查看项目全部素材（${rows.length} 个集合）"><span>${esc(project)}</span></button><div class="scene-list">`);
-    const optionRows = [];
-    const sceneEntries = [...scenes].sort(([a], [b]) => a.localeCompare(b, 'zh-CN'));
-    // A lone placeholder scene adds a tree level without adding information.
-    const flatScenes = sceneEntries.length === 1 && sceneEntries[0][0] === '未分类';
-    for (const [scene, collections] of sceneEntries) {
-      const isSceneActive = state.scope.kind === 'scene' && state.scope.project === project && state.scope.scene === scene;
-      if (!flatScenes) navParts.push(`<button type="button" class="scene-link${isSceneActive ? ' active' : ''}" data-project="${esc(project)}" data-scene="${esc(scene)}"><span>${esc(scene)}</span></button>`);
-      navParts.push(`<div class="collection-list${flatScenes ? ' flat' : ''}">`);
-      for (const collection of collections) {
-        const taxonomy = collectionTaxonomy(collection);
-        const useTag = taxonomy.use === 'uncategorized' ? '' : `<em>${esc(useLabel(taxonomy.use))}</em>`;
-        navParts.push(`<button type="button" class="collection-link${state.scope.kind === 'collection' && collection.slug === active ? ' active' : ''}" data-collection="${esc(collection.slug)}" title="${esc(collection.label)}"${collection.available === false ? ' disabled' : ''}><span class="collection-icon" aria-hidden="true"></span><span>${esc(collection.label)}</span>${useTag}${collection.available === false ? '<small>不可用</small>' : ''}</button>`);
-        optionRows.push(`<option value="${esc(collection.slug)}">${esc(collection.label)}${collection.available === false ? ' — 不可用' : ''}</option>`);
-      }
-      navParts.push('</div>');
-    }
-    navParts.push('</div></section>');
-    parts.push(`<optgroup label="${esc(project)}">${optionRows.join('')}</optgroup>`);
+function projectNames() {
+  return [...new Set(state.collections.map(collection => collectionTaxonomy(collection).project))].sort(sortZh);
+}
+
+function currentProject() {
+  if (state.scope.kind === 'all') return '';
+  return state.scope.project || collectionTaxonomy(state.active).project;
+}
+
+function collapsedSections() {
+  try { return new Set(JSON.parse(readPref(COLLAPSED_KEY, '[]'))); } catch { return new Set(); }
+}
+
+// Pending counts come from /api/pending; archive collections never ask for review.
+function pendingCount(collections) {
+  return collections.reduce((total, collection) => {
+    if (collectionTaxonomy(collection).use === 'archive') return total;
+    return total + Number(state.pending[collection.slug]?.unreviewed || 0);
+  }, 0);
+}
+
+function countBadge(count) {
+  return count ? `<span class="nav-count" title="待审">${count}</span>` : '';
+}
+
+function projectMeta(project) {
+  const collections = scopedCollections(project);
+  const pending = pendingCount(collections);
+  return `${collections.length} 个集合${pending ? ` · ${pending} 待审` : ''}`;
+}
+
+function collectionRow(collection, label) {
+  const taxonomy = collectionTaxonomy(collection);
+  const info = state.pending[collection.slug];
+  const active = state.scope.kind === 'collection' && collection.slug === state.active;
+  const archived = taxonomy.use === 'archive';
+  const tag = taxonomy.use === 'uncategorized' ? '' : useLabel(taxonomy.use);
+  const title = [collection.label, USE_QUESTIONS[taxonomy.use], info ? `共 ${info.total} 项` : ''].filter(Boolean).join(' · ');
+  return `<button type="button" class="nav-item collection-link${active ? ' active' : ''}${archived ? ' archived' : ''}" data-collection="${esc(collection.slug)}" title="${esc(title)}"${collection.available === false ? ' disabled' : ''}><span class="nav-use use-${esc(taxonomy.use)}">${esc(tag)}</span><span class="nav-label">${esc(label)}</span>${collection.available === false ? '<span class="nav-count">不可用</span>' : (archived ? '' : countBadge(Number(info?.unreviewed || 0)))}</button>`;
+}
+
+function renderProjectBody(project) {
+  const scenes = new Map();
+  for (const collection of scopedCollections(project)) {
+    const taxonomy = collectionTaxonomy(collection);
+    if (!scenes.has(taxonomy.scene)) scenes.set(taxonomy.scene, new Map());
+    const topics = scenes.get(taxonomy.scene);
+    if (!topics.has(taxonomy.topic)) topics.set(taxonomy.topic, []);
+    topics.get(taxonomy.topic).push(collection);
   }
-  select.innerHTML = parts.join('');
-  nav.innerHTML = navParts.join('');
-  if (active && state.collections.some(collection => collection.slug === active)) select.value = active;
+  const collapsed = collapsedSections();
+  const activeScene = collectionTaxonomy(state.active).scene;
+  const parts = [`<button type="button" class="nav-item${state.scope.kind === 'project' ? ' active' : ''}" data-project="${esc(project)}"><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">全部</span>${countBadge(pendingCount(scopedCollections(project)))}</button>`];
+  const sceneEntries = [...scenes].sort(([a], [b]) => sortZh(a, b));
+  // A lone placeholder scene adds a level without adding information.
+  const flat = sceneEntries.length === 1 && sceneEntries[0][0] === '未分类';
+  for (const [scene, topics] of sceneEntries) {
+    const key = `${project}/${scene}`;
+    const isCollapsed = collapsed.has(key) && !(state.scope.kind === 'collection' && scene === activeScene);
+    const body = [...topics].sort(([a], [b]) => sortZh(a, b)).map(([topic, collections]) => {
+      collections.sort((a, b) => sortZh(a.label, b.label));
+      // One collection under a topic reads best as the topic itself.
+      if (collections.length === 1) return collectionRow(collections[0], topic);
+      const topicActive = state.scope.kind === 'topic' && state.scope.scene === scene && state.scope.topic === topic;
+      return `<div class="nav-group"><button type="button" class="nav-item topic-link${topicActive ? ' active' : ''}" data-project="${esc(project)}" data-scene="${esc(scene)}" data-topic="${esc(topic)}"><span class="nav-use"></span><span class="nav-label">${esc(topic)}</span>${countBadge(pendingCount(collections))}</button><div class="nav-children">${collections.map(collection => collectionRow(collection, collection.label)).join('')}</div></div>`;
+    }).join('');
+    if (flat) {
+      parts.push(`<div class="nav-section flat"><div class="nav-section-body">${body}</div></div>`);
+      continue;
+    }
+    const sceneActive = state.scope.kind === 'scene' && state.scope.scene === scene;
+    const sceneCollections = [...topics.values()].flat();
+    parts.push(`<section class="nav-section${isCollapsed ? ' collapsed' : ''}"><div class="nav-section-head"><button type="button" class="nav-toggle" data-toggle-section="${esc(key)}" aria-expanded="${!isCollapsed}" aria-label="${isCollapsed ? '展开' : '收起'} ${esc(scene)}"></button><button type="button" class="nav-section-title${sceneActive ? ' active' : ''}" data-project="${esc(project)}" data-scene="${esc(scene)}">${esc(scene)}</button>${countBadge(pendingCount(sceneCollections))}</div><div class="nav-section-body">${body}</div></section>`);
+  }
+  return parts.join('');
+}
+
+function renderRail() {
+  const nav = $('#collectionNav');
+  if (!nav) return;
+  const project = currentProject();
+  $('#switcherName').textContent = project || '所有项目';
+  $('#switcherMeta').textContent = project ? projectMeta(project) : `${projectNames().length} 个项目`;
+  nav.innerHTML = project
+    ? renderProjectBody(project)
+    : projectNames().map(name => `<button type="button" class="nav-item" data-project="${esc(name)}"><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">${esc(name)}</span>${countBadge(pendingCount(scopedCollections(name)))}</button>`).join('') || '<div class="nav-empty">还没有登记素材目录</div>';
   nav.querySelectorAll('[data-collection]').forEach(button => {
     button.onclick = () => switchCollection(button.dataset.collection).catch(showError);
   });
   nav.querySelectorAll('[data-project]:not([data-scene])').forEach(button => {
     button.onclick = () => setProjectScope(button.dataset.project).catch(showError);
   });
-  nav.querySelectorAll('[data-scene]').forEach(button => {
+  nav.querySelectorAll('[data-scene]:not([data-topic])').forEach(button => {
     button.onclick = () => setSceneScope(button.dataset.project, button.dataset.scene).catch(showError);
   });
-  nav.querySelector('[data-all-projects]')?.addEventListener('click', () => setAllProjectsScope().catch(showError));
+  nav.querySelectorAll('[data-topic]').forEach(button => {
+    button.onclick = () => setTopicScope(button.dataset.project, button.dataset.scene, button.dataset.topic).catch(showError);
+  });
+  nav.querySelectorAll('[data-toggle-section]').forEach(button => {
+    button.onclick = () => {
+      const collapsed = collapsedSections();
+      const key = button.dataset.toggleSection;
+      collapsed.has(key) ? collapsed.delete(key) : collapsed.add(key);
+      writePref(COLLAPSED_KEY, JSON.stringify([...collapsed]));
+      button.closest('.nav-section').classList.toggle('collapsed', collapsed.has(key));
+      button.setAttribute('aria-expanded', String(!collapsed.has(key)));
+    };
+  });
+}
+
+function renderCollections(active) {
+  const select = $('#collection');
+  const parts = projectNames().map(project => {
+    const options = scopedCollections(project).sort((a, b) => sortZh(a.label, b.label))
+      .map(collection => `<option value="${esc(collection.slug)}">${esc(collection.label)}${collection.available === false ? ' — 不可用' : ''}</option>`).join('');
+    return `<optgroup label="${esc(project)}">${options}</optgroup>`;
+  });
+  select.innerHTML = parts.join('');
+  if (active && state.collections.some(collection => collection.slug === active)) select.value = active;
+  renderRail();
+}
+
+function renderProjectMenu() {
+  const query = $('#projectMenuSearch').value.trim().toLowerCase();
+  const current = currentProject();
+  const projects = projectNames();
+  $('#projectMenuSearch').classList.toggle('hidden', projects.length <= 6);
+  const rows = projects.filter(name => !query || name.toLowerCase().includes(query)).map(name =>
+    `<button type="button" class="menu-item" role="menuitem" data-switch-project="${esc(name)}"><strong>${esc(name)}</strong><small>${esc(projectMeta(name))}</small>${name === current ? '<span class="check" aria-label="当前">✓</span>' : ''}</button>`
+  );
+  $('#projectMenuList').innerHTML = `<div class="menu-label">项目</div>${rows.join('') || '<div class="nav-empty">没有匹配的项目</div>'}<div class="menu-sep"></div><button type="button" class="menu-item" role="menuitem" data-switch-project="__all__"><strong>所有项目</strong><small>跨项目浏览</small>${current ? '' : '<span class="check" aria-label="当前">✓</span>'}</button>`;
+}
+
+function openProjectMenu() {
+  renderProjectMenu();
+  $('#projectMenu').classList.remove('hidden');
+  $('#projectSwitcher').setAttribute('aria-expanded', 'true');
+  const search = $('#projectMenuSearch');
+  (search.classList.contains('hidden') ? $('#projectMenuList .menu-item') : search)?.focus();
+}
+
+function closeProjectMenu({focus = false} = {}) {
+  if ($('#projectMenu').classList.contains('hidden')) return;
+  $('#projectMenu').classList.add('hidden');
+  $('#projectSwitcher').setAttribute('aria-expanded', 'false');
+  $('#projectMenuSearch').value = '';
+  if (focus) $('#projectSwitcher').focus();
+}
+
+function switchProject(value) {
+  closeProjectMenu();
+  return value === '__all__' ? setAllProjectsScope() : setProjectScope(value);
 }
 
 async function setProjectScope(project) {
@@ -547,6 +681,11 @@ async function setSceneScope(project, scene) {
   if (!project || !scene) return setProjectScope(project);
   const collections = scopedCollections(project, scene);
   return loadScope(collections.map(collection => collection.slug), {kind: 'scene', project, scene});
+}
+
+async function setTopicScope(project, scene, topic) {
+  const collections = scopedCollections(project, scene, topic);
+  return loadScope(collections.map(collection => collection.slug), {kind: 'topic', project, scene, topic});
 }
 
 async function setAllProjectsScope() {
@@ -599,10 +738,12 @@ function quickReviewAssets() {
 
 function quickReviewCandidateAssets() {
   const visible = state.filtered.filter(asset => asset.present !== false);
+  const reviewable = visible.filter(asset => !isArchive(asset));
+  const pool = reviewable.length ? reviewable : visible;
   // A mixed project view should begin with candidate design material. Other
   // material remains available when a reviewer deliberately filters to it.
-  const designs = visible.filter(asset => assetTaxonomy(asset).use === 'design');
-  const candidates = designs.length ? designs : visible;
+  const designs = pool.filter(asset => assetTaxonomy(asset).use === 'design');
+  const candidates = designs.length ? designs : pool;
   return [...candidates.filter(asset => !asset.status), ...candidates.filter(asset => asset.status)];
 }
 
@@ -612,10 +753,8 @@ function updateQuickReviewLaunch() {
   const candidates = quickReviewCandidateAssets();
   const designs = candidates.filter(asset => assetTaxonomy(asset).use === 'design');
   button.disabled = state.workspaceTab !== 'gallery' || candidates.length === 0;
-  button.textContent = '快速审核';
-  button.title = designs.length
-    ? `优先从 ${candidates.filter(asset => !asset.status).length} 项待人工审核的候选设计开始。`
-    : '按当前筛选结果逐张审看；不会自动改变任何审核结果。';
+  button.textContent = '快审';
+  button.title = `${candidates.filter(asset => !asset.status).length} 项待审${designs.length ? '，设计优先' : ''}`;
 }
 
 function clearQuickReviewCommentTimer() {
@@ -739,6 +878,7 @@ function renderQuickReview() {
   const asset = assets[quick.index];
   setQuickReviewMedia(asset);
   $('#quickReviewTitle').textContent = asset.name;
+  $('#quickReviewKicker').textContent = useQuestion(asset);
   const resolution = asset.width && asset.height ? `${asset.width} × ${asset.height}` : assetTypeLabel(asset);
   $('#quickReviewDetails').textContent = [asset.rel, resolution, formatBytes(asset.size)].filter(Boolean).join(' · ');
   const status = asset.status || '';
@@ -746,7 +886,7 @@ function renderQuickReview() {
   statusElement.textContent = statusDisplay(status);
   statusElement.className = `status-pill ${status ? `status-${status}` : 'status-unreviewed'}`;
   const reviewed = assets.filter(candidate => candidate.status).length;
-  $('#quickReviewProgress').textContent = `${quick.index + 1} / ${assets.length} · ${reviewed} 已评价`;
+  $('#quickReviewProgress').textContent = `${quick.index + 1} / ${assets.length} · 已审 ${reviewed}`;
   $('#quickReviewProgressBar').style.width = `${((quick.index + 1) / assets.length) * 100}%`;
   const controlsDisabled = quick.saving;
   $('#quickReviewPrevious').disabled = controlsDisabled || quick.index === 0;
@@ -861,7 +1001,7 @@ async function quickReviewDecision(status) {
     if (quick.index >= quick.keys.length - 1) {
       const assets = quickReviewAssets();
       const remaining = assets.filter(candidate => !candidate.status).length;
-      toast(remaining ? `已到最后一张 · 还有 ${remaining} 项未评价` : `本轮 ${assets.length} 项已全部评价，按 Esc 退出`);
+      toast(remaining ? `最后一张 · 还有 ${remaining} 项待审` : '本轮已审完 · Esc 退出');
     }
     quickReviewMove(1, true);
     refreshReviewState().catch(showError);
@@ -913,7 +1053,7 @@ function openQuickReviewDetails() {
   if (!asset) return;
   const index = state.filtered.findIndex(candidate => keyFor(candidate) === keyFor(asset));
   if (index < 0) {
-    showError(new Error('该素材已不在当前筛选范围内；退出快速审核后可在图库中打开详情。'));
+    showError(new Error('已不在当前筛选中，退出快审后再打开'));
     return;
   }
   $('#quickReview').classList.add('suspended');
@@ -971,10 +1111,10 @@ function applyFilter() {
       asset.comment ? `<span class="chip note" title="${esc(asset.comment)}">意见</span>` : '',
       asset.annotation_count ? `<span class="chip note">${asset.annotation_count} 标注</span>` : '',
       asset.family_name ? `<span class="chip" title="版本组">${esc(asset.family_name)}</span>` : '',
-      asset.family_preferred ? '<span class="chip preferred">偏好</span>' : '',
+      asset.family_preferred ? '<span class="chip preferred">首选</span>' : '',
     ].join('');
-    const quick = [['approved', '✓', '通过'], ['maybe', '?', '待定'], ['rejected', '✕', '拒绝']]
-      .map(([value, mark, label]) => `<button type="button" data-quick="${value}" class="${status === value ? 'on' : ''}" title="${label}" aria-label="${label} ${esc(asset.name)}">${mark}</button>`).join('');
+    const quick = [['approved', '✓', '通过', 1], ['maybe', '?', '待定', 2], ['rejected', '✕', '拒绝', 3]]
+      .map(([value, mark, label, key]) => `<button type="button" data-quick="${value}" class="${status === value ? 'on' : ''}" title="${label} (${key})" aria-label="${label} ${esc(asset.name)}">${mark}</button>`).join('');
     return `<article class="card${selected ? ' selected' : ''}${status ? ` status-${esc(status)}` : ''}" data-i="${index}" tabindex="0" aria-pressed="${state.selectionMode ? String(selected) : 'false'}" title="${esc(asset.rel || asset.name)}">
       <div class="thumb-wrap"><img class="thumb" loading="lazy" decoding="async" src="${esc(asset.thumb)}" alt="${esc(asset.name)}">${asset.media_type === 'video' ? '<span class="video-play" aria-hidden="true">▶</span>' : ''}${badge}<input class="select-toggle" data-select="${index}" type="checkbox" ${selected ? 'checked' : ''} ${state.selectionMode ? '' : 'tabindex="-1"'} aria-label="${selected ? '取消选择' : '选择'} ${esc(asset.name)}"><div class="card-actions">${quick}</div></div>
       <div class="caption"><div class="name">${esc(asset.name)}</div><div class="card-meta">${meta}</div><div class="card-chips">${chips}</div></div>
@@ -1000,10 +1140,11 @@ function applyFilter() {
     };
     element.onkeydown = event => {
       if (event.target !== element) return;
-      const reviewKey = {a: 'approved', 1: 'approved', m: 'maybe', 2: 'maybe', r: 'rejected', 3: 'rejected'}[event.key.toLowerCase()];
-      if (reviewKey && !event.ctrlKey && !event.metaKey && !state.selectionMode) {
+      const reviewKey = {1: 'approved', 2: 'maybe', 3: 'rejected', 0: ''}[event.key];
+      if (reviewKey !== undefined && !event.ctrlKey && !event.metaKey && !state.selectionMode) {
         event.preventDefault();
-        cardReview(index, reviewKey).catch(showError);
+        const asset = state.filtered[index];
+        if (reviewKey || asset?.status) cardReview(index, reviewKey || asset.status).catch(showError);
         return;
       }
       if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -1058,7 +1199,7 @@ async function cardReview(index, status) {
   applyFilter();
   const card = grid.querySelector(`.card[data-i="${state.filtered.findIndex(item => keyFor(item) === key)}"]`);
   (card || grid.querySelector(`.card[data-i="${Math.min(index, state.filtered.length - 1)}"]`))?.focus({preventScroll: true});
-  toast(next ? `${statusDisplay(next)} · ${asset.name}` : `已清除审核状态 · ${asset.name}`);
+  toast(next ? `${statusDisplay(next)} · ${asset.name}` : `已清除 · ${asset.name}`);
   refreshReviewState().catch(showError);
 }
 
@@ -1121,18 +1262,18 @@ function updateCollectionActions() {
   const review = state.reviewState;
   const singleCollection = isSingleCollectionScope();
   const items = [
-    {value: 'select-all', label: `全选当前结果（${state.filtered.length}）`, disabled: !state.filtered.length},
-    {value: 'save-view', label: '保存当前视图…'},
-    ...(state.activeSavedView ? [{value: 'delete-view', label: '删除当前保存视图'}] : []),
-    {value: 'report', label: '打开审核报告', disabled: !singleCollection},
-    {value: 'handoff', label: '导出已通过交接清单', disabled: !singleCollection},
-    {value: 'refresh', label: '刷新当前范围'},
+    {value: 'select-all', label: `全选（${state.filtered.length}）`, disabled: !state.filtered.length},
+    {value: 'save-view', label: '保存视图…'},
+    ...(state.activeSavedView ? [{value: 'delete-view', label: '删除视图'}] : []),
+    {value: 'report', label: '审核报告', disabled: !singleCollection},
+    {value: 'handoff', label: '导出交付清单', disabled: !singleCollection},
+    {value: 'refresh', label: '刷新'},
   ];
   if (singleCollection && review && !review.scan_incomplete && !review.empty) {
-    if (review.complete) items.splice(1, 0, {value: 'reopen', label: '重新打开审核'});
-    else if (!review.unreviewed) items.splice(1, 0, {value: 'complete', label: review.stale ? '重新完成审核' : '标记审核完成'});
+    if (review.complete) items.splice(1, 0, {value: 'reopen', label: '重新打开'});
+    else if (!review.unreviewed) items.splice(1, 0, {value: 'complete', label: '标记完成'});
   }
-  setMenu($('#actions'), '更多…', items);
+  setMenu($('#actions'), '⋯', items);
 }
 
 function updateBulk() {
@@ -1141,22 +1282,20 @@ function updateBulk() {
   const selectedCollections = new Set(assets.map(asset => asset.collection));
   const singleCollection = selectedCollections.size <= 1;
   $('#bulkbar').classList.toggle('hidden', !(state.selectionMode || count > 0));
-  $('#selectedCount').textContent = count ? `${count} 项已选择` : '选择素材';
+  $('#selectedCount').textContent = count ? `${count} 项` : '选择';
   $('#selectionScopeNote').textContent = !count
-    ? '点击卡片连续选择，或全选当前结果。'
-    : (singleCollection
-      ? '批量审核会保留原生审核历史。'
-      : '跨集合选择仅用于比较；审核和版本关系请在单个集合中完成。');
+    ? 'Shift 连选 · Ctrl 加选'
+    : (singleCollection ? '' : '跨集合仅可对比');
   $('#selectAllVisible').disabled = state.filtered.length === 0;
   $('#clearSelection').disabled = count === 0;
   const items = [
-    {value: 'approve', label: '设为已通过', disabled: !count || !singleCollection}, {value: 'maybe', label: '设为待定', disabled: !count || !singleCollection},
-    {value: 'reject', label: '设为已拒绝', disabled: !count || !singleCollection}, {value: 'clear-review', label: '清除审核状态', disabled: !count || !singleCollection},
-    {value: 'compare', label: '比较选中方案', disabled: count < 2},
-    {value: 'group', label: '建立版本组', disabled: count < 2 || !singleCollection},
-    {value: 'clear-selection', label: '清空选择'},
+    {value: 'approve', label: '通过', disabled: !count || !singleCollection}, {value: 'maybe', label: '待定', disabled: !count || !singleCollection},
+    {value: 'reject', label: '拒绝', disabled: !count || !singleCollection}, {value: 'clear-review', label: '清除状态', disabled: !count || !singleCollection},
+    {value: 'compare', label: '对比', disabled: count < 2},
+    {value: 'group', label: '建版本组', disabled: count < 2 || !singleCollection},
+    {value: 'clear-selection', label: '清空'},
   ];
-  setMenu($('#selectionAction'), '批量操作…', items);
+  setMenu($('#selectionAction'), '批量…', items);
   updateCollectionActions();
 }
 
@@ -1165,18 +1304,15 @@ function updateReviewState() {
 }
 
 async function refreshReviewState() {
-  if (!state.active || !isSingleCollectionScope()) {
-    state.reviewState = null;
-    updateReviewState();
-    return;
-  }
   const active = state.active;
   const scopeRequest = state.scopeRequest;
-  const response = await fetch('/api/pending?collection=' + encodeURIComponent(active), {cache: 'no-store'});
+  const response = await fetch('/api/pending', {cache: 'no-store'});
   if (!response.ok) return;
   const data = await response.json();
-  if (scopeRequest !== state.scopeRequest || !isSingleCollectionScope() || state.active !== active) return;
-  state.reviewState = data.collections[0] || null;
+  state.pending = Object.fromEntries((data.collections || []).map(item => [item.collection, item]));
+  renderRail();
+  if (scopeRequest !== state.scopeRequest || state.active !== active) return;
+  state.reviewState = isSingleCollectionScope() ? (state.pending[active] || null) : null;
   updateReviewState();
 }
 
@@ -1210,15 +1346,15 @@ function renderProvenance(asset) {
   const p = asset?.provenance || {};
   const taxonomy = assetTaxonomy(asset);
   const rows = [
-    ['浏览分类', [taxonomy.project, taxonomy.scene, useLabel(taxonomy.use)].filter(Boolean).join(' · ')],
-    ['来源项目', p.source_project], ['工具', p.tool], ['代理', p.agent], ['模型', p.model],
-    ['提示词', p.prompt], ['随机种子', p.seed], ['运行批次', p.run_id], ['Git 提交', p.git_commit],
-    ['父级素材', p.parent_asset_id],
+    ['分类', [taxonomy.project, taxonomy.scene, taxonomy.topic, useLabel(taxonomy.use)].filter(Boolean).join(' · ')],
+    ['项目', p.source_project], ['工具', p.tool], ['Agent', p.agent], ['模型', p.model],
+    ['提示词', p.prompt], ['种子', p.seed], ['批次', p.run_id], ['提交', p.git_commit],
+    ['父级', p.parent_asset_id],
   ].filter(([, value]) => value);
   const extras = p.extra && typeof p.extra === 'object' ? Object.entries(p.extra) : [];
   const content = $('#provenanceContent');
   if (rows.length === 1 && !extras.length) {
-    content.innerHTML = `${rows.map(([key, value]) => `<div class="provenance-row"><strong>${esc(key)}</strong><span>${esc(metadataValue(value))}</span></div>`).join('')}<span class="muted">来源：未声明／未导入</span>`;
+    content.innerHTML = `${rows.map(([key, value]) => `<div class="provenance-row"><strong>${esc(key)}</strong><span>${esc(metadataValue(value))}</span></div>`).join('')}<span class="muted">无来源信息</span>`;
     return;
   }
   content.innerHTML = [...rows, ...extras].map(([key, value]) =>
@@ -1228,14 +1364,14 @@ function renderProvenance(asset) {
 
 function updateAssetActions(asset) {
   const items = [
-    ...(asset?.status ? [{value: 'clear', label: '清除审核状态'}] : []),
-    {value: 'history', label: '审核历史'},
-    {value: 'undo', label: '撤销上次审核变更'},
-    {value: 'copy-path', label: '复制相对路径'},
-    {value: 'copy-link', label: '复制审核链接'},
-    {value: 'open-original', label: '打开原文件'},
+    ...(asset?.status ? [{value: 'clear', label: '清除状态'}] : []),
+    {value: 'history', label: '历史'},
+    {value: 'undo', label: '撤销'},
+    {value: 'copy-path', label: '复制路径'},
+    {value: 'copy-link', label: '复制链接'},
+    {value: 'open-original', label: '原文件'},
   ];
-  setMenu($('#assetActions'), '更多…', items);
+  setMenu($('#assetActions'), '⋯', items);
 }
 
 function renderFamilyRow(asset) {
@@ -1249,11 +1385,11 @@ function renderFamilyRow(asset) {
   const count = family ? family.members.filter(member => member.present).length : state.images.filter(item => item.family_id === asset.family_id).length;
   const latest = family && family.latest_asset_id === asset.asset_id;
   $('#familyName').textContent = asset.family_name || (family && family.name) || '版本组';
-  $('#familyMeta').textContent = `${count} 个版本${asset.family_preferred ? ' · 偏好方案' : ''}${latest ? ' · 最新' : ''}`;
+  $('#familyMeta').textContent = `${count} 个版本${asset.family_preferred ? ' · 首选' : ''}${latest ? ' · 最新' : ''}`;
   setMenu($('#familyActions'), '版本组…', [
-    {value: 'compare', label: '比较版本组', disabled: count < 2},
-    {value: 'prefer', label: asset.family_preferred ? '已设为偏好方案' : '设为偏好方案', disabled: Boolean(asset.family_preferred)},
-    {value: 'leave', label: '移出版本组'},
+    {value: 'compare', label: '对比', disabled: count < 2},
+    {value: 'prefer', label: asset.family_preferred ? '已是首选' : '设为首选', disabled: Boolean(asset.family_preferred)},
+    {value: 'leave', label: '移出'},
   ]);
   row.classList.remove('hidden');
 }
@@ -1286,13 +1422,15 @@ function openAt(index, updateUrl = true) {
   const resolution = asset.width && asset.height ? `${asset.width}×${asset.height}` : (isVideo ? '视频' : '');
   $('#details').textContent = [asset.rel !== asset.name ? asset.rel : '', resolution, formatBytes(asset.size)].filter(Boolean).join(' · ');
   $('#stagePosition').textContent = `${state.current + 1} / ${state.filtered.length}`;
+  $('#reviewQuestion').textContent = useQuestion(asset);
+  $('#reviewQuestion').dataset.use = assetTaxonomy(asset).use;
   document.querySelector('.annotation-field')?.classList.toggle('hidden', isVideo);
   if (stageZoom.key !== keyFor(asset)) {
     resetStageZoom();
     stageZoom.key = keyFor(asset);
   }
   $('#comment').value = asset.comment || '';
-  $('#commentState').textContent = '自动保存';
+  $('#commentState').textContent = '';
   renderReviewDecision(asset);
   renderFamilyRow(asset);
   renderProvenance(asset);
@@ -1477,7 +1615,7 @@ async function copyPath() {
   const asset = state.filtered[state.current];
   if (!asset) return;
   await navigator.clipboard.writeText(asset.rel);
-  toast('已复制相对路径');
+  toast('已复制路径');
 }
 
 async function copyReviewLink() {
@@ -1562,9 +1700,9 @@ function normalizedPoint(event) {
 }
 
 const ANNOTATION_HELP = {
-  point: '在图上点击需要修改的位置（Esc 取消）。',
-  region: '在图上拖出需要修改的区域（Esc 取消）。',
-  '': '需要指向具体位置时，选择“点”或“区域”。',
+  point: '点击图上位置 · Esc 取消',
+  region: '拖出区域 · Esc 取消',
+  '': '',
 };
 
 function renderAnnotationModeButtons() {
@@ -1697,7 +1835,7 @@ function annotationPointerUp(event) {
   const w = Math.abs(point.x - start.x);
   const h = Math.abs(point.y - start.y);
   if (w < 0.01 || h < 0.01) {
-    $('#annotationHelp').textContent = '框选范围太小，请拖出更大的区域。';
+    $('#annotationHelp').textContent = '区域太小';
     return;
   }
   createSpatialAnnotation('region', {x, y, w, h}).catch(showError);
@@ -1863,7 +2001,7 @@ function renderCompare() {
   $('#compareLink').value = state.compareLinked ? 'linked' : 'independent';
 
   if (state.compareMode === 'side') {
-    $('#compareHint').textContent = '滚轮缩放 · 拖动平移 · 双击重置；联动缩放让各方案保持对齐。';
+    $('#compareHint').textContent = '滚轮缩放 · 拖动平移 · 双击重置';
     gridElement.className = 'compare-grid';
     gridElement.innerHTML = assets.map((asset, index) =>
       `<article class="compare-item"><div class="compare-viewport" data-compare-viewport="${index}"><img class="compare-pan-image" data-compare-image="${index}" src="${esc(assetSrc(asset))}" alt=""></div><div><strong>${esc(asset.name)}</strong><span>${esc(statusDisplay(asset.status))}${asset.comment ? ' · ' + esc(asset.comment) : ''}</span></div></article>`
@@ -1876,8 +2014,8 @@ function renderCompare() {
   const [left, right] = assets;
   const difference = state.compareMode === 'difference';
   $('#compareHint').textContent = difference
-    ? '差异视图 · 亮处即变化，滚轮缩放查看细节。'
-    : '叠加视图 · 拖动滑块混合两张图，比较构图。';
+    ? '亮处即差异'
+    : '拖动滑块混合两张图';
   gridElement.className = 'compare-grid compare-single';
   gridElement.innerHTML = `<div class="compare-stack ${difference ? 'difference' : ''}" data-compare-viewport="0">
     <img class="compare-bottom" data-compare-image="0" src="${esc(assetSrc(left))}" alt="${esc(left.name)}">
@@ -1975,14 +2113,14 @@ function activitySummaryText(event) {
 function activityPresentation(event) {
   const action = String(event.action || '').toLowerCase();
   const status = String(event.new_status || '').toLowerCase();
-  if ((action === 'review' || action === 'batch') && status === 'approved') return {tone: 'approved', mark: '✓', label: '审核决定'};
-  if ((action === 'review' || action === 'batch') && status === 'rejected') return {tone: 'rejected', mark: '×', label: '审核决定'};
-  if ((action === 'review' || action === 'batch') && status === 'maybe') return {tone: 'maybe', mark: '?', label: '审核决定'};
-  if (action === 'asset_added' || action === 'asset_restored') return {tone: 'added', mark: '+', label: '素材入库'};
-  if (action === 'comment' || action.startsWith('annotation_')) return {tone: 'note', mark: '•', label: '意见与标注'};
+  if ((action === 'review' || action === 'batch') && status === 'approved') return {tone: 'approved', mark: '✓', label: '审核'};
+  if ((action === 'review' || action === 'batch') && status === 'rejected') return {tone: 'rejected', mark: '×', label: '审核'};
+  if ((action === 'review' || action === 'batch') && status === 'maybe') return {tone: 'maybe', mark: '?', label: '审核'};
+  if (action === 'asset_added' || action === 'asset_restored') return {tone: 'added', mark: '+', label: '入库'};
+  if (action === 'comment' || action.startsWith('annotation_')) return {tone: 'note', mark: '•', label: '意见'};
   if (action.startsWith('family_')) return {tone: 'family', mark: '◇', label: '版本组'};
-  if (action === 'metadata_updated' || action.startsWith('metadata')) return {tone: 'neutral', mark: 'i', label: '来源信息'};
-  if (action === 'collection_complete') return {tone: 'approved', mark: '✓', label: '集合审核完成'};
+  if (action === 'metadata_updated' || action.startsWith('metadata')) return {tone: 'neutral', mark: 'i', label: '来源'};
+  if (action === 'collection_complete') return {tone: 'approved', mark: '✓', label: '完成'};
   return {tone: 'neutral', mark: '•', label: action.replaceAll('_', ' ') || '活动'};
 }
 
@@ -1999,7 +2137,7 @@ async function loadActivity() {
   if (!response.ok) throw new Error('无法读取审核记录');
   const data = await response.json();
   state.activityEvents = data.events || [];
-  $('#activitySummary').textContent = `最近 ${state.activityEvents.length} 条`;
+  $('#activitySummary').textContent = `${state.activityEvents.length} 条`;
   let lastDay = '';
   $('#activityList').innerHTML = state.activityEvents.length
     ? [...state.activityEvents].reverse().map(event => {
@@ -2070,7 +2208,7 @@ async function setView(view) {
 }
 
 async function switchCollection(slug) {
-  if (!slug || (slug === state.active && isSingleCollectionScope())) return;
+  if (!slug || (slug === state.active && state.scope.kind === 'collection')) return;
   const tab = state.workspaceTab;
   history.pushState(null, '', collectionUrl(slug));
   await load(slug);
@@ -2095,7 +2233,7 @@ async function exportHandoff() {
   if (!response.ok) throw new Error('无法导出交接清单');
   const payload = await response.json();
   downloadJson(`${state.active}-approved-handoff.json`, payload);
-  toast('已导出交接清单');
+  toast('已导出交付清单');
 }
 
 async function handleCollectionAction(value) {
@@ -2145,39 +2283,41 @@ async function handleFamilyAction(value) {
 function paletteCommands() {
   // `alias` keeps English keywords searchable alongside the Chinese labels.
   const commands = [
-    {label: '视图：素材', alias: 'gallery', run: () => setWorkspaceTab('gallery')},
-    {label: '视图：审核记录', alias: 'activity history', run: () => setWorkspaceTab('activity')},
-    {label: '视图：已通过', alias: 'approved handoff', run: () => setWorkspaceTab('approved')},
-    {label: '快速审核', alias: 'quick review cull', run: () => startQuickReview()},
-    {label: '搜索素材', alias: 'search find', keys: '/', run: () => $('#search').focus()},
+    {label: '素材', alias: 'gallery', run: () => setWorkspaceTab('gallery')},
+    {label: '记录', alias: 'activity history', run: () => setWorkspaceTab('activity')},
+    {label: '交付', alias: 'approved handoff', run: () => setWorkspaceTab('approved')},
+    {label: '快审', alias: 'quick review cull', run: () => startQuickReview()},
+    {label: '搜索', alias: 'search find', keys: '/', run: () => $('#search').focus()},
     {label: '只看待审', alias: 'unreviewed filter', run: () => setStatusFilter('unreviewed')},
-    {label: '保存当前视图…', alias: 'save view', run: () => saveCurrentView()},
-    {label: '刷新当前范围', alias: 'refresh reload', run: () => reloadCurrentScope(true)},
-    {label: '切换明暗主题', alias: 'theme dark light', run: () => cycleTheme()},
-    {label: '缩略图：小 / 中 / 大', alias: 'density thumbnail size', run: () => setDensity((Number(grid.dataset.density) + 1) % 3)},
+    {label: '保存视图…', alias: 'save view', run: () => saveCurrentView()},
+    {label: '刷新', alias: 'refresh reload', run: () => reloadCurrentScope(true)},
+    {label: '切换主题', alias: 'theme dark light', run: () => cycleTheme()},
+    {label: '缩略图大小', alias: 'density thumbnail size', run: () => setDensity((Number(grid.dataset.density) + 1) % 3)},
   ];
   if (isSingleCollectionScope()) {
     commands.push(
-      {label: '打开审核报告', alias: 'report', run: () => window.open(`/report?collection=${encodeURIComponent(state.active)}&present=1&refresh=1`, '_blank', 'noopener')},
-      {label: '导出已通过交接清单', alias: 'export handoff', run: () => exportHandoff()},
+      {label: '审核报告', alias: 'report', run: () => window.open(`/report?collection=${encodeURIComponent(state.active)}&present=1&refresh=1`, '_blank', 'noopener')},
+      {label: '导出交付清单', alias: 'export handoff', run: () => exportHandoff()},
     );
   }
+  for (const project of projectNames()) commands.push({label: `项目：${project}`, alias: 'project switch', run: () => setProjectScope(project)});
+  commands.push({label: '项目：所有项目', alias: 'project all', run: () => setAllProjectsScope()});
   for (const saved of state.savedViews) commands.push({label: `已保存视图：${saved.name}`, alias: 'saved view', run: () => applySavedView(saved.id)});
-  if (state.filtered.length) commands.push({label: `全选当前结果（${state.filtered.length}）`, alias: 'select all', run: () => selectAllVisible()});
-  if (state.selected.size >= 2) commands.push({label: '比较选中方案', alias: 'compare', run: () => openCompare()});
+  if (state.filtered.length) commands.push({label: `全选（${state.filtered.length}）`, alias: 'select all', run: () => selectAllVisible()});
+  if (state.selected.size >= 2) commands.push({label: '对比选中', alias: 'compare', run: () => openCompare()});
   if (state.reviewState && !state.reviewState.scan_incomplete && !state.reviewState.empty) {
-    if (state.reviewState.complete) commands.push({label: '重新打开审核', alias: 'reopen', run: () => toggleComplete()});
-    else if (!state.reviewState.unreviewed) commands.push({label: '标记审核完成', alias: 'complete', run: () => toggleComplete()});
+    if (state.reviewState.complete) commands.push({label: '重新打开', alias: 'reopen', run: () => toggleComplete()});
+    else if (!state.reviewState.unreviewed) commands.push({label: '标记完成', alias: 'complete', run: () => toggleComplete()});
   }
   if (!modal.classList.contains('hidden')) {
     commands.push(
-      {label: '素材：通过', alias: 'approve', keys: 'A', run: () => review('approved')},
-      {label: '素材：待定', alias: 'maybe', keys: 'M', run: () => review('maybe')},
-      {label: '素材：拒绝', alias: 'reject', keys: 'R', run: () => review('rejected')},
-      {label: '素材：清除审核状态', alias: 'clear', run: () => review('')},
-      {label: '素材：适应 / 100% 缩放', alias: 'zoom actual size', keys: 'Z', run: () => toggleActualSize()},
-      {label: '素材：审核历史', alias: 'history', run: () => showHistory()},
-      {label: '素材：复制审核链接', alias: 'copy link', run: () => copyReviewLink()},
+      {label: '通过', alias: 'approve', keys: '1', run: () => review('approved')},
+      {label: '待定', alias: 'maybe', keys: '2', run: () => review('maybe')},
+      {label: '拒绝', alias: 'reject', keys: '3', run: () => review('rejected')},
+      {label: '清除状态', alias: 'clear', keys: '0', run: () => review('')},
+      {label: '100% / 适应', alias: 'zoom actual size', keys: 'Z', run: () => toggleActualSize()},
+      {label: '历史', alias: 'history', run: () => showHistory()},
+      {label: '复制链接', alias: 'copy link', run: () => copyReviewLink()},
     );
   }
   return commands;
@@ -2252,6 +2392,28 @@ $('#filtersToggle').onclick = () => {
 $('#density').oninput = () => setDensity($('#density').value);
 $('#themeToggle').onclick = () => cycleTheme();
 $('#paletteHint').onclick = () => openCommandPalette();
+$('#projectSwitcher').onclick = () => ($('#projectMenu').classList.contains('hidden') ? openProjectMenu() : closeProjectMenu());
+$('#projectMenuSearch').oninput = () => renderProjectMenu();
+$('#projectMenu').onclick = event => {
+  const item = event.target.closest('[data-switch-project]');
+  if (item) switchProject(item.dataset.switchProject).catch(showError);
+};
+$('#projectMenu').onkeydown = event => {
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    closeProjectMenu({focus: true});
+    return;
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  event.preventDefault();
+  const items = [...$('#projectMenu').querySelectorAll('.menu-item')];
+  const index = items.indexOf(document.activeElement);
+  items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+};
+document.addEventListener('pointerdown', event => {
+  if (!event.target.closest('.rail-head')) closeProjectMenu();
+});
 $('#view').onchange = () => setView($('#view').value).catch(showError);
 $('#quickReviewLaunch').onclick = () => startQuickReview();
 $('#closeQuickReview').onclick = () => closeQuickReview();
@@ -2379,16 +2541,16 @@ document.onkeydown = event => {
     else if (event.key === 'ArrowLeft') step(-1);
     else if (event.key === 'ArrowRight') step(1);
     else if (event.ctrlKey || event.metaKey || event.altKey) return;
-    else if (event.key.toLowerCase() === 'a' || event.key === '1') review('approved').catch(showError);
-    else if (event.key.toLowerCase() === 'm' || event.key === '2') review('maybe').catch(showError);
-    else if (event.key.toLowerCase() === 'r' || event.key === '3') review('rejected').catch(showError);
+    else if (event.key === '1') review('approved').catch(showError);
+    else if (event.key === '2') review('maybe').catch(showError);
+    else if (event.key === '3') review('rejected').catch(showError);
+    else if (event.key === '0') review('').catch(showError);
     else if (event.key.toLowerCase() === 'z') toggleActualSize();
-    else if (event.key === '0') resetStageZoom();
     return;
   }
   if (isQuickReviewOpen()) {
     if (editing) return;
-    if (event.repeat && (((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') || ['1', '2', '3', 'a', 'm', 'r'].includes(event.key.toLowerCase()))) {
+    if (event.repeat && (((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') || ['1', '2', '3'].includes(event.key))) {
       event.preventDefault();
       return;
     }
@@ -2408,17 +2570,28 @@ document.onkeydown = event => {
     } else if (event.key === 'ArrowRight') {
       event.preventDefault();
       quickReviewMove(1);
-    } else if (event.key === '1' || (!event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'a')) {
+    } else if (event.key === '1') {
       event.preventDefault();
       quickReviewDecision('approved').catch(showError);
-    } else if (event.key === '2' || event.key.toLowerCase() === 'm') {
+    } else if (event.key === '2') {
       event.preventDefault();
       quickReviewDecision('maybe').catch(showError);
-    } else if (event.key === '3' || event.key.toLowerCase() === 'r') {
+    } else if (event.key === '3') {
       event.preventDefault();
       quickReviewDecision('rejected').catch(showError);
     }
     return;
+  }
+  // Hover-to-decide: 1/2/3 on the card under the pointer, 0 clears it.
+  const hoverKey = {1: 'approved', 2: 'maybe', 3: 'rejected', 0: ''}[event.key];
+  if (hoverKey !== undefined && !editing && !event.defaultPrevented && !event.ctrlKey && !event.metaKey && !event.altKey && !state.selectionMode && state.workspaceTab !== 'activity') {
+    const hovered = grid.querySelector('.card:hover');
+    const asset = hovered ? state.filtered[Number(hovered.dataset.i)] : null;
+    if (asset && (hoverKey || asset.status)) {
+      event.preventDefault();
+      cardReview(Number(hovered.dataset.i), hoverKey || asset.status).catch(showError);
+      return;
+    }
   }
   if (event.key === '/' && !editing) {
     event.preventDefault();
@@ -2472,6 +2645,7 @@ function showError(error) {
     renderViewMenu();
     await session();
     await load(collectionFromLocation());
+    refreshReviewState().catch(console.error);
     setInterval(() => pollCatalog().catch(error => console.error(error)), 2000);
   } catch (error) {
     showError(error);

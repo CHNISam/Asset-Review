@@ -146,6 +146,10 @@ def main() -> None:
                     lambda message: console_errors.append(message.text) if message.type == "error" else None,
                 )
 
+                def switch_project(name: str) -> None:
+                    page.locator("#projectSwitcher").click()
+                    page.locator(f'[data-switch-project="{name}"]').click()
+
                 response = page.goto(base_url, wait_until="domcontentloaded")
                 assert response is not None and response.ok, "initial gallery request failed"
                 page.locator("#summary").wait_for(state="visible")
@@ -167,8 +171,7 @@ def main() -> None:
                 assert page.locator("#tabGallery").is_visible()
                 assert page.locator("#tabActivity").is_visible()
                 assert page.locator("#tabApproved").is_visible()
-                assert page.locator("#projectFilter").is_visible()
-                assert page.locator("#sceneFilter").is_visible()
+                assert page.locator("#projectSwitcher").is_visible()
                 assert page.locator("#useFilter").is_visible()
                 assert page.locator("#selectionMode").is_visible()
                 assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
@@ -177,22 +180,23 @@ def main() -> None:
 
                 # A project filter must open another registered project without
                 # replacing the demo collection or starting another service.
-                page.locator("#projectFilter").select_option(label="Second Project")
+                switch_project("Second Project")
                 wait_until(
                     "second project gallery to load",
                     lambda: page.locator("#grid .card").count() == 1,
                 )
                 assert page.locator("#grid .card").filter(has_text="theater-reference.png").count() == 1
 
-                # The desktop collection <select> is intentionally hidden;
-                # use the visible project navigation just as a reviewer does.
+                # The sidebar shows one project at a time; switch back the way
+                # a reviewer does, then open the collection from the sidebar.
+                switch_project("未分组")
                 page.locator(f'[data-collection="{demo_slug}"]').click()
                 wait_until("demo gallery to return", lambda: page.locator("#grid .card").count() == 6)
 
                 # "All projects" remains an explicit scope rather than
                 # silently falling back to the active collection.  Selecting
                 # across collections keeps native review mutations disabled.
-                page.locator("#projectFilter").select_option("__all__")
+                switch_project("__all__")
                 wait_until("all project assets to load", lambda: page.locator("#grid .card").count() == 7)
                 assert page.locator("#projectFilter").input_value() == "__all__"
                 assert page.locator("#sceneFilter").is_disabled()
@@ -207,6 +211,7 @@ def main() -> None:
                 assert not page.locator('#selectionAction option[value="approve"]').is_enabled()
                 page.locator("#clearSelection").click()
                 page.locator("#selectionMode").click()
+                switch_project("未分组")
                 page.locator(f'[data-collection="{demo_slug}"]').click()
                 wait_until("demo gallery after all-project scope", lambda: page.locator("#grid .card").count() == 6)
 
