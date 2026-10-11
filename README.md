@@ -35,15 +35,57 @@ Groups read `Project / Scene / Topic / Use`. The sidebar shows one project at a 
 | `Design` | 设计 | 能进制作吗？ | yes |
 | `Runtime` | 实机 | 实现到位吗？ | yes |
 | `Asset` | 资产 | 能交付吗？ | yes |
-| `Archive` / `Evidence` | 存档 | 无需审核, kept as a record only | no; skipped by 快审 |
+| `Archive` / `Evidence` | 存档 | 无需审核, kept as a record only | no; skipped by 逐张审 |
 
 Material without a declared use shows as **未标注**; it is never guessed. Register task evidence that nobody needs to judge as `Archive`, so it stays searchable without landing in anyone's review queue. Re-running `asset-viewer add` on an already-registered folder changes only its group; the slug and review history are kept. Use stays separate from the native `Approved` / `Maybe` / `Rejected` review state.
 
+## Production assets
+
+The studio is organized around what you are making, not around folders. An **asset** (a concert hall, a sword, a HUD) declares the **design views** it really needs: front, side, back, top, a detail, or any custom view. Each view keeps its own revisions (v1, v2, v3 …). The owner selects one revision per view and confirms the set as a **design lock** (D1, D2 …): the exact, hash-verified files a coding agent may build from.
+
+![Concert hall asset page: current result, three separate gates, next step](docs/studio-asset.png)
+
+Later **stages** follow the asset's own pipeline: 设计 → 建模 → UV → 材质 → 绑定动画 → 实机, configured per asset. Agents attach evidence (screenshots, videos, timelapses, or a source reference such as a `.blend` path) and report progress; only the owner accepts. Three gates stay separate: **视觉批准** (design lock), **技术就绪** (every technical stage ready or accepted) and **实机验收** (the engine stage accepted).
+
+![Front view: three revisions, side-by-side compare, select, annotate](docs/studio-view-versions.png)
+
+Put files in the asset folder and they appear on their own:
+
+```text
+<collection>/<asset>/design/front/front_v3.png   → front view, revision v3
+<collection>/<asset>/design/side_v1.png          → side view, revision v1
+<collection>/<asset>/model|uv|texture|rig|engine/ → evidence for that stage
+```
+
+Obvious junk (names with `tmp`/`draft`/`wip`/草稿, images under 256 px, byte-identical repeats) is culled automatically with a reason and stays restorable. **待决定** lists only owner decisions: choosing a revision, confirming the set, accepting a stage. **清理未采用** parks culled and unchosen revisions in `<collection>/.asset-review-trash/` with their record kept; locked, selected, approved and evidence files are never touched.
+
+![Project overview: owner decisions grouped per asset, assets by scene with their stage track](docs/studio-overview.png)
+
+The asset page ends with a **making-of**: one chapter per stage with the real media in order, and an explicit "no material yet" where a stage has none. Nothing is generated to fill the gaps.
+
+| Who | May |
+|---|---|
+| Owner (browser) | select revisions, lock the design, accept or send back a stage, clean up, upload |
+| Agent (`asset-viewer prod …`, MCP) | declare assets and views, attach revisions and evidence, report `todo`/`wip`/`ready`, cull with a reason, read the lock |
+
+```powershell
+asset-viewer prod create --project "Example Game" --name 音乐厅 --key music-hall --kind environment `
+  --view front --view side --view top --view "detail?" --collection example-art --prefix music-hall
+asset-viewer prod show music-hall                  # views, revisions, gates, next step
+asset-viewer prod lock music-hall --output lock.json   # verified design lock; empty until the owner locks
+asset-viewer prod stage music-hall model --status ready --summary "18.4k tris"
+asset-viewer prod evidence music-hall --stage texture --source "art/hall.spp" --caption "Substance file"
+```
+
+`asset-viewer demo` seeds this concert hall (code-drawn, no private imagery), and `python tests/e2e_production.py ./shots` runs the whole loop in a real browser.
+
+The file **素材库** stays one click away in the sidebar for browsing registered folders. Opening a file shows where it is used, or lets you add it to an asset view or stage.
+
 For a project-owned reusable declaration, commit a relative `.asset-viewer.toml` and run `asset-viewer project-sync`; see [Project-native registration and metadata](#project-native-registration-and-metadata).
 
-### Review
+### File library review
 
-There is one review surface. **审核** opens it at the first pending item in the current filter (design first, archive skipped); clicking any image opens the same view.
+Files in the 素材库 that are not yet part of an asset can still be judged one by one. **逐张审** opens it at the first pending item in the current filter (design first, archive skipped); clicking any image opens the same view.
 
 | Key | Action |
 |---|---|
@@ -58,42 +100,9 @@ The same `1` / `2` / `3` work on a hovered or focused grid card. Items marked �
 
 ## Human and agent boundary
 
-Humans own review decisions. Agents may register folders, attach non-review provenance, and read approved results, comments, annotations, history, and handoff manifests. Agents must not set review status, undo, mark a collection complete, or edit the local review database. The concise operating contract—including the distinction between reference acceptance, design selection, production-asset readiness, and in-engine art acceptance—is in [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md).
+Humans own review decisions, revision selection, design locks and stage acceptance. Agents may register folders, attach non-review provenance, and read approved results, comments, annotations, history, and handoff manifests. Agents must not set review status, undo, mark a collection complete, or edit the local review database. The concise operating contract—including the distinction between reference acceptance, design selection, production-asset readiness, and in-engine art acceptance—is in [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md).
 
-Asset Viewer gives humans a clean place to **see, compare, play, approve, defer, and reject visual assets without moving the originals**.
-
-It was built for a simple workflow problem: agents and creative tools are increasingly good at producing images, but the review step often degenerates into oversized chat attachments, IDE file trees, temporary uploads, or copies scattered across cloud drives. Asset Viewer keeps review separate from storage.
-
-### Review the work, not the file tree
-
-Open a collection and the review state is immediately visible: what needs attention, what is approved, what is rejected, and which assets belong to the same variant family. The original project folders stay exactly where they are.
-
-![Actual Asset Viewer gallery showing the Northline Coffee demo review queue](docs/screenshot.png)
-
-*Actual Asset Viewer UI. The built-in demo seeds a fictional Northline Coffee campaign so the complete workflow is visible immediately after install.*
-
-### Compare variants where the pixels matter
-
-Group related generations into a variant family and inspect them side by side with linked zoom/pan, overlay, or difference views. Review notes and preferred-variant state remain attached to the exact assets instead of disappearing into a chat transcript.
-
-![Actual Asset Viewer side-by-side comparison of two Northline Coffee demo variants](docs/precision-review.png)
-
-### Follow the decision trail, then hand off the approved set
-
-Activity is a human-readable projection of the same durable event stream automation consumes. The Approved workspace is a focused lens over canonical review state, with the existing integrity-checked handoff and review report ready for downstream use.
-
-<table>
-<tr>
-<td width="50%"><img src="docs/activity-review.png" alt="Actual Asset Viewer activity timeline for the Northline Coffee demo"></td>
-<td width="50%"><img src="docs/approved-handoff.png" alt="Actual Asset Viewer approved-set handoff workspace for the Northline Coffee demo"></td>
-</tr>
-<tr>
-<td><em>Real collection activity and review decisions.</em></td>
-<td><em>Real approved assets and existing handoff controls.</em></td>
-</tr>
-</table>
-
-The demo includes a product-first hero, a lifestyle alternative, an intentionally bad crop, a product lineup, a lifestyle concept, and a homepage banner. It arrives with a few example decisions and two assets still waiting for review, so a new user can exercise the real review loop instead of staring at placeholder rectangles.
+Asset Viewer gives humans a clean place to **see, compare, play, approve, defer, and reject visual assets without moving the originals**, and agents a predictable contract for what has actually been decided.
 
 ## Why it exists
 

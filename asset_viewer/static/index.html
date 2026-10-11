@@ -8,73 +8,81 @@
   <title>Asset Review</title>
   <link rel="stylesheet" href="/app.css">
 </head>
-<body>
+<body data-mode="studio">
 <div class="app-shell">
-  <aside id="collectionRail" class="collection-rail">
-    <div class="rail-head">
-      <button id="projectSwitcher" class="project-switcher" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="projectMenu"><span class="mark" aria-hidden="true"></span><span class="switcher-text"><strong id="switcherName">Asset Review</strong><small id="switcherMeta"></small></span><span class="chevron" aria-hidden="true"></span></button>
-      <div id="projectMenu" class="project-menu hidden" role="menu" aria-label="切换项目"><input id="projectMenuSearch" class="hidden" type="search" placeholder="查找项目" aria-label="查找项目"><div id="projectMenuList"></div></div>
+  <aside class="sidebar" aria-label="导航">
+    <div class="side-head">
+      <button id="projectSwitcher" class="project-switcher" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="projectMenu"><span id="projectMark" class="project-mark" aria-hidden="true">A</span><span class="switcher-text"><strong id="switcherName">Asset Review</strong><small id="switcherMeta"></small></span><span class="chevron" aria-hidden="true"></span></button>
+      <div id="projectMenu" class="project-menu hidden" role="menu" aria-label="切换项目"></div>
     </div>
-    <nav id="collectionNav" class="collection-nav" aria-label="项目内容"></nav>
-    <div class="rail-footer"><span>Asset Review</span><button id="themeToggle" class="rail-icon" type="button" title="主题：浅色" aria-label="切换主题"><span id="themeLabel" class="visually-hidden">主题：浅色</span><span aria-hidden="true">◐</span></button><button id="paletteHint" class="rail-icon" type="button" title="命令面板 (Ctrl K)" aria-label="命令面板"><kbd>Ctrl K</kbd></button></div>
+    <nav class="side-nav" aria-label="工作台">
+      <a class="side-link" href="/#/" data-nav="overview"><span class="side-icon overview" aria-hidden="true"></span>总览</a>
+      <a class="side-link" href="/#/decide" data-nav="decide"><span class="side-icon decide" aria-hidden="true"></span>待决定<span id="decideCount" class="side-count hidden"></span></a>
+    </nav>
+    <div class="side-scroll">
+      <section class="side-section">
+        <div class="side-heading"><span>资产</span><button id="newAsset" class="side-add" type="button" title="新建资产" aria-label="新建资产">+</button></div>
+        <div id="assetNav" class="asset-nav"></div>
+      </section>
+      <section class="side-section library-section">
+        <div class="side-heading"><span>素材库</span></div>
+        <div id="libraryEmpty" class="side-empty hidden">此项目还没有登记素材目录</div>
+        <nav id="collectionNav" class="collection-nav" aria-label="素材目录"></nav>
+      </section>
+    </div>
+    <div class="side-foot"><button id="themeToggle" class="foot-btn" type="button" title="主题：浅色" aria-label="切换主题"><span id="themeLabel" class="visually-hidden">主题：浅色</span><span aria-hidden="true">◐</span></button><button id="paletteHint" class="foot-btn" type="button" title="命令面板 (Ctrl K)" aria-label="命令面板"><kbd>Ctrl K</kbd></button></div>
   </aside>
 
-  <section class="workspace">
-    <header class="topbar">
-      <div class="collection-context">
-        <span id="scopeLabel" class="eyebrow"></span>
-        <div class="collection-title-row"><h1 id="collectionTitle">Asset Review</h1><select id="actions" class="menu-select" aria-label="集合操作" title="更多操作"><option value="">⋯</option></select></div>
-        <span id="summary">载入中…</span>
-      </div>
-      <nav class="workspace-tabs" aria-label="工作区">
-        <button id="tabGallery" class="workspace-tab active" type="button" data-workspace-tab="gallery">素材</button>
-        <button id="tabActivity" class="workspace-tab" type="button" data-workspace-tab="activity">记录</button>
-        <button id="tabApproved" class="workspace-tab" type="button" data-workspace-tab="approved" title="已通过素材的交付清单">交付</button>
-      </nav>
-      <div class="search-wrap"><span aria-hidden="true" class="search-icon"></span><input id="search" type="search" placeholder="搜索" title="名称、意见、来源；支持 status: use: scene: 等字段" aria-label="搜索素材"><kbd class="search-kbd">/</kbd></div>
-    </header>
+  <main class="main">
+    <section id="studioView" class="studio" aria-live="polite"></section>
 
-    <div class="toolbar">
-      <div id="statusChips" class="status-chips" role="group" aria-label="按状态筛选"></div><span id="workspaceCount" class="workspace-count"></span>
-      <select id="filter" class="visually-hidden" tabindex="-1" aria-hidden="true"><option value="all">全部</option><option value="new">未看过</option><option value="unreviewed">待审</option><option value="approved">通过</option><option value="maybe">修改</option><option value="rejected">拒绝</option></select>
-      <div id="facetBar" class="facet-bar" aria-label="范围">
-        <label class="mobile-only mobile-collection"><span>集合</span><select id="collection" aria-label="集合"></select></label>
-        <label class="mobile-only"><span>项目</span><select id="projectFilter" aria-label="项目"></select></label>
-        <label class="mobile-only"><span>场景</span><select id="sceneFilter" aria-label="场景"></select></label>
-        <label><span>用途</span><select id="useFilter" aria-label="用途"><option value="all">全部</option></select></label>
-        <label><span>视图</span><select id="view" aria-label="视图"><option value="gallery">素材</option><option value="activity">记录</option></select></label>
-      </div>
-      <div class="toolbar-actions">
-        <button id="filtersToggle" class="filters-toggle" type="button" aria-expanded="false" aria-controls="facetBar">筛选</button>
-        <select id="sort" aria-label="排序"><option value="newest">最新</option><option value="oldest">最早</option><option value="name">名称</option><option value="status">状态</option><option value="size">大小</option><option value="resolution">分辨率</option></select>
-        <label class="density" title="缩略图大小"><span aria-hidden="true" class="density-icon"></span><input id="density" type="range" min="0" max="2" step="1" value="1" aria-label="缩略图大小"></label>
-        <button id="selectionMode" type="button" aria-pressed="false">多选</button>
-        <button id="startReview" class="primary" type="button" title="从第一项待审开始">审核</button>
-      </div>
-    </div>
+    <section id="libraryView" class="workspace hidden" aria-label="素材库">
+      <header class="topbar">
+        <div class="collection-context">
+          <span id="scopeLabel" class="eyebrow"></span>
+          <div class="collection-title-row"><h1 id="collectionTitle">素材库</h1><select id="actions" class="menu-select" aria-label="集合操作" title="更多操作"><option value="">⋯</option></select></div>
+          <span id="summary">载入中…</span>
+        </div>
+        <div class="search-wrap"><span aria-hidden="true" class="search-icon"></span><input id="search" type="search" placeholder="搜索文件" title="名称、意见、来源；支持 status: use: scene: 等字段" aria-label="搜索素材"><kbd class="search-kbd">/</kbd></div>
+      </header>
 
-    <div id="bulkbar" class="bulkbar hidden"><strong id="selectedCount">选择</strong><span id="selectionScopeNote"></span><button id="selectAllVisible" type="button">全选</button><button id="clearSelection" type="button">清空</button><select id="selectionAction" aria-label="批量操作"><option value="">批量…</option></select></div>
-
-    <main class="workspace-main">
-      <div class="content-frame">
-        <section id="galleryView"><div id="empty" class="empty hidden"><strong>没有素材</strong><span>调整筛选，或用 <code>asset-viewer add 路径</code> 登记素材目录。</span></div><div id="grid" class="grid" data-density="1"></div></section>
-        <section id="activityView" class="activity-view hidden"><div class="activity-heading"><strong>记录</strong><span id="activitySummary"></span></div><div id="activityList" class="activity-list"></div></section>
-        <aside id="approvedPanel" class="approved-panel hidden" aria-label="交付">
-          <div class="approved-ready"><span class="approved-check" aria-hidden="true">✓</span><div><strong id="approvedCount">0 项通过</strong><span id="approvedSummaryText"></span></div></div>
-          <button id="approvedHandoff" class="primary" type="button" title="导出 JSON 清单，不移动或改写原文件">导出交付清单</button>
-          <button id="approvedReport" type="button">审核报告</button>
-          <div id="approvedMeta" class="approved-meta"></div>
-        </aside>
+      <div class="toolbar">
+        <div id="statusChips" class="status-chips" role="group" aria-label="按状态筛选"></div><span id="workspaceCount" class="workspace-count"></span>
+        <select id="filter" class="visually-hidden" tabindex="-1" aria-hidden="true"><option value="all">全部</option><option value="new">未看过</option><option value="unreviewed">待审</option><option value="approved">通过</option><option value="maybe">修改</option><option value="rejected">拒绝</option></select>
+        <div id="facetBar" class="facet-bar" aria-label="范围">
+          <label class="mobile-only mobile-collection"><span>目录</span><select id="collection" aria-label="目录"></select></label>
+          <label class="mobile-only"><span>项目</span><select id="projectFilter" aria-label="项目"></select></label>
+          <label class="mobile-only"><span>场景</span><select id="sceneFilter" aria-label="场景"></select></label>
+          <label><span>用途</span><select id="useFilter" aria-label="用途"><option value="all">全部</option></select></label>
+          <label><span>视图</span><select id="view" aria-label="已保存视图"><option value="gallery">全部素材</option></select></label>
+        </div>
+        <div class="toolbar-actions">
+          <button id="filtersToggle" class="filters-toggle" type="button" aria-expanded="false" aria-controls="facetBar">筛选</button>
+          <select id="sort" aria-label="排序"><option value="newest">最新</option><option value="oldest">最早</option><option value="name">名称</option><option value="status">状态</option><option value="size">大小</option><option value="resolution">分辨率</option></select>
+          <label class="density" title="缩略图大小"><span aria-hidden="true" class="density-icon"></span><input id="density" type="range" min="0" max="2" step="1" value="1" aria-label="缩略图大小"></label>
+          <button id="selectionMode" type="button" aria-pressed="false">多选</button>
+          <button id="startReview" type="button" title="逐张查看待审文件">逐张审</button>
+        </div>
       </div>
-    </main>
-  </section>
+
+      <div id="bulkbar" class="bulkbar hidden"><strong id="selectedCount">选择</strong><span id="selectionScopeNote"></span><button id="selectAllVisible" type="button">全选</button><button id="clearSelection" type="button">清空</button><select id="selectionAction" aria-label="批量操作"><option value="">批量…</option></select></div>
+
+      <div class="workspace-main">
+        <div class="content-frame">
+          <section id="galleryView"><div id="empty" class="empty hidden"><strong>没有素材</strong><span>调整筛选，或用 <code>asset-viewer add 路径</code> 登记素材目录。</span></div><div id="grid" class="grid" data-density="1"></div></section>
+        </div>
+      </div>
+    </section>
+  </main>
 </div>
 
+<div id="viewStudio" class="view-studio hidden" role="dialog" aria-modal="true" aria-label="设计视图"></div>
+<div id="dialog" class="dialog-backdrop hidden"></div>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-<div id="commandPalette" class="command-palette hidden" role="dialog" aria-modal="true" aria-label="命令面板"><div class="command-box"><input id="commandSearch" type="search" autocomplete="off" placeholder="输入命令" aria-label="搜索命令"><div id="commandList" class="command-list" role="listbox"></div><span class="command-hint">↵ 执行 · ↑↓ 选择 · Esc 关闭</span></div></div>
+<div id="commandPalette" class="command-palette hidden" role="dialog" aria-modal="true" aria-label="命令面板"><div class="command-box"><input id="commandSearch" type="search" autocomplete="off" placeholder="前往资产、切换项目或执行命令" aria-label="搜索命令"><div id="commandList" class="command-list" role="listbox"></div><span class="command-hint">↵ 执行 · ↑↓ 选择 · Esc 关闭</span></div></div>
 
-<div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="素材审核">
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="文件">
   <section class="stage">
     <div class="stage-bar"><span id="stagePosition" class="stage-position"></span><span id="zoomLevel" class="zoom-level" title="滚轮缩放 · 拖动平移 · 双击切换 100%">适应</span><button class="icon-button close" id="close" type="button" aria-label="关闭">×</button></div>
     <div id="stageViewport" class="stage-viewport">
@@ -85,7 +93,8 @@
     <nav id="filmstrip" class="filmstrip" aria-label="胶片带"></nav>
   </section>
   <aside class="inspector">
-    <div class="identity-row"><div class="identity"><strong id="filename"></strong><span id="details"></span><span id="previewNotice" class="preview-notice hidden"></span></div><span id="reviewDecision" class="status-pill">待审</span><select id="assetActions" class="menu-select" aria-label="素材操作" title="更多操作"><option value="">⋯</option></select></div>
+    <div class="identity-row"><div class="identity"><strong id="filename"></strong><span id="details"></span><span id="previewNotice" class="preview-notice hidden"></span></div><span id="reviewDecision" class="status-pill">待审</span><select id="assetActions" class="menu-select" aria-label="文件操作" title="更多操作"><option value="">⋯</option></select></div>
+    <div id="assignRow" class="assign-row hidden"></div>
     <span id="reviewQuestion" class="review-question"></span>
     <div id="reviewStatus" class="decision-group" role="radiogroup" aria-label="审核状态">
       <button type="button" class="decision approve" data-status="approved" role="radio" aria-checked="false">通过 <kbd>1</kbd></button>
@@ -107,4 +116,5 @@
 
 <div id="compareModal" class="modal compare-modal hidden" role="dialog" aria-modal="true" aria-label="比较选中素材"><section class="compare-stage"><div class="compare-heading"><div><strong>对比</strong><span id="compareHint"></span></div><div class="compare-controls"><select id="compareMode" aria-label="比较模式"><option value="side">并排</option><option value="overlay">叠加</option><option value="difference">差异</option></select><select id="compareLink" aria-label="缩放行为"><option value="linked">联动</option><option value="independent">独立</option></select><select id="compareActions" class="menu-select" aria-label="对比操作" title="更多操作"><option value="">⋯</option><option value="reset">重置视图</option></select><label id="overlayControl" class="overlay-control hidden">混合 <input id="overlayRange" type="range" min="0" max="100" value="50"></label><button class="icon-button" id="closeCompare" type="button" aria-label="关闭比较">×</button></div></div><div id="compareGrid" class="compare-grid"></div></section></div>
 <script src="/app.js"></script>
+<script src="/studio.js"></script>
 </body></html>

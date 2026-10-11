@@ -18,6 +18,7 @@ from waitress import serve as waitress_serve
 from . import __version__
 from .activity import activity_feed
 from .handoff import approved_handoff
+from . import production_api
 from .app import (
     BASE_CSP,
     LOOPBACK_HOSTS,
@@ -264,6 +265,11 @@ class AssetViewerWSGI:
             return self._static(environ, start_response, "app.css", "text/css; charset=utf-8")
         if path == "/app.js":
             return self._static(environ, start_response, "app.js", "application/javascript; charset=utf-8")
+        if path == "/studio.js":
+            return self._static(environ, start_response, "studio.js", "application/javascript; charset=utf-8")
+        production = production_api.handle_get(path, str(environ.get("QUERY_STRING") or ""))
+        if production is not None:
+            return _json_response(start_response, *production)
         if path == "/api/session":
             return _json_response(start_response, 200, {"csrf": self.csrf_token, "version": __version__})
         if path == "/api/capabilities":
@@ -407,8 +413,21 @@ class AssetViewerWSGI:
         return _file_response(environ, start_response, path, content_type, {"Cache-Control": "public, max-age=300"})
 
     def _post(self, environ: dict[str, Any], start_response: StartResponse, path: str) -> Iterable[bytes]:
+        if path == production_api.PREFIX + "upload":
+            try:
+                length = int(environ.get("CONTENT_LENGTH") or 0)
+            except ValueError:
+                length = 0
+            if length <= 0 or length > production_api.production.MAX_UPLOAD_BYTES:
+                return _json_response(start_response, 400, {"ok": False, "error": "upload size is invalid or too large"})
+            data = environ["wsgi.input"].read(length)
+            result = production_api.handle_upload(path, str(environ.get("QUERY_STRING") or ""), _header(environ, "X-Filename"), data)
+            return _json_response(start_response, *result)
         try:
             payload = self._read_json(environ)
+            production = production_api.handle_post(path, payload)
+            if production is not None:
+                return _json_response(start_response, *production)
             slug = str(payload.get("collection", ""))
             if not root_for(slug):
                 raise ValueError("collection not found")

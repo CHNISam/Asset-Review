@@ -13,6 +13,7 @@ from .app import LOOPBACK_HOSTS, capability_document, scan_collection, serve as 
 from .wsgi import serve as production_serve
 from .report import render_review_report
 from .mcp_server import run_mcp
+from . import production_cli
 from .activity import activity_feed
 from .handoff import approved_handoff, copy_approved_set
 from .demo_assets import DEMO_COLLECTION_LABEL, DEMO_FAMILY, DEMO_PROJECT, DEMO_REVIEWS, create_demo
@@ -423,6 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     demo = sub.add_parser("demo", help="Create and register synthetic demo assets")
     demo.add_argument("--path", default="./asset-viewer-demo")
+    production_cli.register(sub)
     return parser
 
 
@@ -431,7 +433,9 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     try:
-        if args.command == "add":
+        if args.command == "prod":
+            production_cli.run(args)
+        elif args.command == "add":
             row = add_collection(args.path, args.label, args.group)
             suffix = f" [{row['group']}]" if row.get("group") else ""
             print(f"Added {row['label']} ({row['slug']}){suffix}: {row['path']}")
@@ -794,6 +798,9 @@ def main() -> None:
                 create_family(row["slug"], family_name, member_ids, records[preferred]["asset_id"])
             print(f"Created and registered demo collection: {row['path']}")
             print("Seeded a realistic campaign review with approvals, feedback, and A/B hero variants.")
+            from .demo_production import seed_demo
+            studio = seed_demo(path.with_name(path.name + "-studio"))
+            print(f"Seeded production asset '{studio['asset']}' (concert hall design revisions): {studio['path']}")
             print("Run: asset-viewer serve")
         else:
             parser.print_help()

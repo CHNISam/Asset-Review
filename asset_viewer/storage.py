@@ -190,6 +190,7 @@ def _connect() -> sqlite3.Connection:
         _migrate_legacy_reviews(conn)
         _ensure_catalog_schema(conn)
         _ensure_context_schema(conn)
+        _ensure_production_schema(conn)
         conn.commit()
     try:
         path.chmod(0o600)
@@ -296,6 +297,108 @@ def _ensure_context_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+
+
+def _ensure_production_schema(conn: sqlite3.Connection) -> None:
+    """Production objects: assets with design views, revisions, design locks, stages, evidence.
+
+    Files stay in their registered folders; these rows only point at catalog
+    assets by stable asset_id and remember the exact bytes (sha256) chosen.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS prod_assets (
+            asset_key TEXT PRIMARY KEY,
+            project TEXT NOT NULL,
+            scene TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'prop',
+            brief TEXT NOT NULL DEFAULT '',
+            stages TEXT NOT NULL DEFAULT '[]',
+            source_collection TEXT,
+            source_prefix TEXT NOT NULL DEFAULT '',
+            sort INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prod_assets_project ON prod_assets(project, scene, sort);
+        CREATE TABLE IF NOT EXISTS prod_views (
+            asset_key TEXT NOT NULL,
+            view_key TEXT NOT NULL,
+            label TEXT NOT NULL,
+            required INTEGER NOT NULL DEFAULT 1,
+            sort INTEGER NOT NULL DEFAULT 0,
+            selected_revision_id TEXT,
+            selected_at TEXT,
+            PRIMARY KEY (asset_key, view_key)
+        );
+        CREATE TABLE IF NOT EXISTS prod_revisions (
+            revision_id TEXT PRIMARY KEY,
+            asset_key TEXT NOT NULL,
+            view_key TEXT NOT NULL,
+            number INTEGER NOT NULL,
+            collection TEXT NOT NULL,
+            file_id TEXT NOT NULL,
+            rel TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            origin TEXT NOT NULL DEFAULT 'linked',
+            state TEXT NOT NULL DEFAULT 'candidate' CHECK(state IN ('candidate', 'culled', 'archived')),
+            state_reason TEXT NOT NULL DEFAULT '',
+            trash_rel TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (asset_key, view_key, number)
+        );
+        CREATE INDEX IF NOT EXISTS idx_prod_revisions_view ON prod_revisions(asset_key, view_key, number);
+        CREATE INDEX IF NOT EXISTS idx_prod_revisions_file ON prod_revisions(file_id);
+        CREATE TABLE IF NOT EXISTS prod_locks (
+            lock_id TEXT PRIMARY KEY,
+            asset_key TEXT NOT NULL,
+            number INTEGER NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            views TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            superseded_at TEXT,
+            UNIQUE (asset_key, number)
+        );
+        CREATE TABLE IF NOT EXISTS prod_stages (
+            asset_key TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo', 'wip', 'ready', 'accepted')),
+            summary TEXT NOT NULL DEFAULT '',
+            next_step TEXT NOT NULL DEFAULT '',
+            updated_by TEXT NOT NULL DEFAULT '',
+            accepted_at TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (asset_key, stage)
+        );
+        CREATE TABLE IF NOT EXISTS prod_evidence (
+            evidence_id TEXT PRIMARY KEY,
+            asset_key TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'image',
+            collection TEXT,
+            file_id TEXT,
+            rel TEXT,
+            sha256 TEXT,
+            source TEXT NOT NULL DEFAULT '',
+            caption TEXT NOT NULL DEFAULT '',
+            origin TEXT NOT NULL DEFAULT 'linked',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prod_evidence_asset ON prod_evidence(asset_key, stage, created_at);
+        CREATE TABLE IF NOT EXISTS prod_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_key TEXT NOT NULL,
+            action TEXT NOT NULL,
+            actor TEXT NOT NULL DEFAULT 'system',
+            details TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prod_events_asset ON prod_events(asset_key, id);
+        """
+    )
 
 
 def _migrate_legacy_reviews(conn: sqlite3.Connection) -> None:

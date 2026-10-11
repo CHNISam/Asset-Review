@@ -2,6 +2,16 @@
 
 Asset Viewer was built around a simple boundary: **agents create files; humans review them; the viewer does not become the source of truth.**
 
+## Production assets
+
+When the work is a game asset rather than a loose batch of images:
+
+1. Declare it once: `asset-viewer prod create --project P --name 音乐厅 --key music-hall --kind environment --view front --view side --view top --collection <slug> --prefix music-hall`.
+2. Deliver design revisions into `<prefix>/design/<view>/` (or `<prefix>/design/<view>_vN.png`) and run `asset-viewer prod discover music-hall`. Obvious drafts are culled automatically; cull more with `prod cull <revision_id> --reason ...`.
+3. Wait for the owner to select revisions and lock the design. Build only from `asset-viewer prod lock music-hall`: it returns the verified files (path, sha256, notes, annotations). If `locked` is false or `verified` is false, stop and say so.
+4. Put model, UV, texture, rig and engine evidence in `<prefix>/<stage>/`, or attach a source reference with `prod evidence --source`. Report `prod stage <asset> <stage> --status wip|ready --summary ... --next ...`.
+5. Never accept a stage, select a revision, lock a design or clean up files. Those are owner decisions in the browser, and the CLI and MCP tools do not offer them.
+
 ## Recommended contract
 
 When an agent produces images:

@@ -324,5 +324,39 @@ class HttpSecurityTests(unittest.TestCase):
         self.assertEqual(headers.get("Referrer-Policy"), "no-referrer")
 
 
+    def test_production_routes_require_csrf_and_keep_uploads_inside_the_asset_folder(self):
+        create = json.dumps({"action": "create", "project": "P", "name": "Hall", "asset_key": "hall", "kind": "prop",
+                             "views": [{"key": "front"}], "source_collection": "samples", "source_prefix": "hall"}).encode()
+        status, _, _ = self.request("POST", "/api/production/asset", origin=self.same_origin(), body=create)
+        self.assertEqual(status, 403)
+        status, _, body = self.request("POST", "/api/production/asset", origin=self.same_origin(), body=create, csrf="test-csrf-token")
+        self.assertEqual(status, 201, body)
+        status, _, body = self.request("GET", "/api/production/asset?key=hall")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["views"][0]["view"], "front")
+        png = (self.images / "sample.png").read_bytes()
+
+        def upload(query, filename, data, csrf="test-csrf-token"):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+            headers = {"Host": f"127.0.0.1:{self.port}", "Origin": self.same_origin(), "Content-Type": "image/png", "X-Filename": filename}
+            if csrf:
+                headers["X-Asset-Viewer-CSRF"] = csrf
+            conn.request("POST", "/api/production/upload?" + query, body=data, headers=headers)
+            response = conn.getresponse()
+            payload = response.read()
+            conn.close()
+            return response.status, payload
+
+        self.assertEqual(upload("key=hall&view=front", "a.png", png, csrf=None)[0], 403)
+        self.assertEqual(upload("key=hall&view=front", "evil.exe", b"MZ")[0], 400)
+        status, payload = upload("key=hall&view=front", "..%2F..%2Fescape.png", png)
+        self.assertEqual(status, 201, payload)
+        self.assertTrue((self.images / "hall" / "design" / "front" / "front_v1.png").is_file())
+        self.assertFalse((self.images.parent / "escape.png").exists())
+        revisions = json.loads(payload)["views"][0]["revisions"]
+        self.assertEqual([r["label"] for r in revisions], ["v1"])
+        status, _, body = self.request("GET", "/api/production/lock?key=hall")
+        self.assertFalse(json.loads(body)["locked"])
+
 if __name__ == "__main__":
     unittest.main()

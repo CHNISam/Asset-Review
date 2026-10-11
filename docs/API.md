@@ -121,6 +121,22 @@ asset-viewer annotate brand-concepts <asset-id> point 0.42 0.61 "Remove this obj
 
 Accepts `collection` plus `asset_id` (preferred) or `rel`. Returns the asset's decision/comment history, including undone actions and system content-change events.
 
+## Production APIs
+
+Production assets point at catalog files by stable `asset_id`; files never move except through owner cleanup.
+
+- `GET /api/production/projects` — projects from assets and collection groups
+- `GET /api/production/overview?project=` — assets by scene with cover, gates, next step and owner decisions
+- `GET /api/production/asset?key=` — one asset: views with revisions (`v1`…), design locks, stages with evidence, `making_of` chapters and the event log. Picks up new files that follow the folder convention first.
+- `GET /api/production/lock?key=` — the current design lock with absolute paths, sha256, notes and annotations, re-verified on every read (`verified`, `problems`). `locked: false` until the owner confirms one; candidates are never implementation authority.
+- `GET /api/production/cleanup[?asset=]` — revisions that could be parked safely
+- `GET /api/production/file?file_id=` — where a catalog file is used, plus assign targets
+- `GET /api/production/meta` — kinds, stages, view presets, collections
+
+Owner mutations (CSRF, same as below): `POST /api/production/asset` (`create`/`update`), `/view` (`add`/`update`/`remove`), `/select`, `/lock`, `/stage` (`accepted` or `wip` with `next_step`), `/revision` (`attach`/`cull`/`restore`), `/evidence` (`attach`/`remove`), `/cleanup`, and `POST /api/production/upload?key=&view=|stage=` with the raw file body and an `X-Filename` header. Uploads are written as the next `<view>_vN` inside the asset folder and never overwrite.
+
+Agents use `asset-viewer prod …` or the MCP tools `get_production_asset`, `get_design_lock`, `attach_design_revision`, `attach_stage_evidence`, `report_stage_progress` and `cull_revision`. None of them can select, lock, accept or clean up.
+
 ## Mutation APIs
 
 Browser mutations use JSON POST requests and require the session CSRF token from `/api/session` in `X-Asset-Viewer-CSRF`. Origin/Host checks are also enforced.

@@ -8,6 +8,7 @@ from .activity import activity_feed
 from .handoff import approved_handoff
 from .project_config import load_project_config
 from .project_sync import sync_project
+from . import production
 from .storage import (
     annotations_for_asset,
     asset_metadata,
@@ -162,6 +163,42 @@ def refresh_collections(collection: str | None = None) -> dict[str, Any]:
     return {"version": 1, "collections": [catalog_state(row["slug"]) for row in rows]}
 
 
+def get_production_asset(asset: str) -> dict[str, Any]:
+    """Read one production asset: views, revisions, design lock, stages, next step."""
+    production.discover(asset, actor="agent")
+    return production.asset_detail(asset)
+
+
+def get_design_lock(asset: str) -> dict[str, Any]:
+    """The verified design lock an implementation may build from. Never build from unlocked candidates."""
+    return production.design_lock(asset)
+
+
+def attach_design_revision(asset: str, view: str, collection: str, rel: str, note: str = "") -> dict[str, Any]:
+    """Attach a catalog file as the next revision of one design view (v1, v2 ...)."""
+    _scan(collection)
+    return production.attach_revision(asset, view, collection, rel=rel, note=note, origin="agent", actor="agent")
+
+
+def attach_stage_evidence(
+    asset: str, stage: str, collection: str | None = None, rel: str | None = None, source: str = "", caption: str = "",
+) -> dict[str, Any]:
+    """Attach evidence (screenshot, video, timelapse, or a source reference) to a production stage."""
+    if collection:
+        _scan(collection)
+    return production.attach_evidence(asset, stage, collection=collection, rel=rel, source=source, caption=caption, origin="agent", actor="agent")
+
+
+def report_stage_progress(asset: str, stage: str, status: str | None = None, summary: str | None = None, next_step: str | None = None) -> dict[str, Any]:
+    """Report stage progress as todo, wip or ready. Acceptance is reserved for the owner."""
+    return production.set_stage(asset, stage, status=status, summary=summary, next_step=next_step, actor="agent")
+
+
+def cull_revision(revision_id: str, reason: str) -> dict[str, Any]:
+    """Hide an obviously unusable candidate revision, with a reason. Selected or locked revisions are refused."""
+    return production.cull_revision(revision_id, reason, actor="agent")
+
+
 def create_mcp_server():
     try:
         from mcp.server import MCPServer
@@ -184,6 +221,12 @@ def create_mcp_server():
     server.tool()(inspect_project_config)
     server.tool()(sync_project_config)
     server.tool()(refresh_collections)
+    server.tool()(get_production_asset)
+    server.tool()(get_design_lock)
+    server.tool()(attach_design_revision)
+    server.tool()(attach_stage_evidence)
+    server.tool()(report_stage_progress)
+    server.tool()(cull_revision)
 
     @server.resource("asset-viewer://capabilities")
     def capabilities_resource() -> str:

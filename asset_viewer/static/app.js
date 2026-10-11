@@ -18,13 +18,10 @@ let state = {
   compareDrag: null,
   catalogGeneration: 0,
   view: 'gallery',
-  activityEvents: [],
   savedViews: [],
   activeSavedView: '',
   paletteMatches: [],
   paletteIndex: 0,
-  workspaceTab: 'gallery',
-  galleryFilterBeforeApproved: 'all',
   scan: {},
   scope: {kind: 'collection', project: '', scene: '', topic: ''},
   pending: {},
@@ -49,6 +46,10 @@ const APP_NAME = 'Asset Review';
 const esc = value => String(value).replace(/[&<>\"]/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[char]));
 const keyFor = asset => `${asset.collection || state.active}:${asset.asset_id || asset.rel}`;
 const assetSrc = asset => asset.preview || asset.thumb;
+const libraryShown = () => document.body.dataset.mode === 'library';
+function libraryUrl(url) {
+  if (libraryShown()) history.replaceState(null, '', url);
+}
 
 // Per-viewer conveniences only; review state never lives in browser storage.
 function readPref(key, fallback = '') {
@@ -179,7 +180,7 @@ function persistSavedViews() {
 function renderViewMenu() {
   const select = $('#view');
   const saved = state.savedViews.map(item => `<option value="saved:${esc(item.id)}">${esc(item.name)}</option>`).join('');
-  select.innerHTML = '<option value="gallery">素材</option><option value="activity">审核记录</option>' +
+  select.innerHTML = '<option value="gallery">全部素材</option>' +
     (saved ? `<optgroup label="已保存视图">${saved}</optgroup>` : '');
   select.value = state.activeSavedView ? `saved:${state.activeSavedView}` : state.view;
 }
@@ -217,9 +218,6 @@ function applySavedView(id) {
   $('#filter').value = record.filter || 'all';
   $('#sort').value = record.sort || 'newest';
   state.view = 'gallery';
-  state.workspaceTab = 'gallery';
-  $('#galleryView').classList.remove('hidden');
-  $('#activityView').classList.add('hidden');
   applyFilter();
   renderViewMenu();
   renderWorkspaceState();
@@ -332,7 +330,7 @@ async function load(requested, force = false) {
   const active = data.active;
   const taxonomy = collectionTaxonomy((data.collections || []).find(collection => collection.slug === active) || {slug: active});
   applyGalleryScope([data], {kind: 'collection', project: taxonomy.project, scene: taxonomy.scene, active});
-  if (active && location.pathname !== collectionUrl(active)) history.replaceState(null, '', collectionUrl(active));
+  if (active && location.pathname !== collectionUrl(active)) libraryUrl(collectionUrl(active));
   if (requestedAsset) {
     const index = state.filtered.findIndex(asset => (asset.asset_id || asset.rel) === requestedAsset);
     if (index >= 0) openAt(index, false);
@@ -347,7 +345,7 @@ async function loadScope(slugs, scope, force = false) {
   if (request !== state.scopeRequest) return;
   const active = unique.includes(state.active) ? state.active : unique[0];
   applyGalleryScope(payloads, {...scope, active});
-  if (state.active && location.pathname !== collectionUrl(state.active)) history.replaceState(null, '', collectionUrl(state.active));
+  if (state.active && location.pathname !== collectionUrl(state.active)) libraryUrl(collectionUrl(state.active));
 }
 
 async function reloadCurrentScope(force = true) {
@@ -435,7 +433,7 @@ function renderWorkspaceState() {
   const title = scopeTitle();
   $('#collectionTitle').textContent = title;
   $('#scopeLabel').textContent = scopeCaption();
-  document.title = collection && isSingleCollectionScope() ? `${collection.label} · ${APP_NAME}` : APP_NAME;
+  if (libraryShown()) document.title = collection && isSingleCollectionScope() ? `${collection.label} · 素材库` : `素材库 · ${APP_NAME}`;
 
   // Archive material is evidence, not a decision, so it never counts toward progress.
   const reviewable = state.images.filter(asset => !isArchive(asset));
@@ -448,30 +446,7 @@ function renderWorkspaceState() {
   $('#summary').textContent = parts.join(' · ');
   renderStatusChips(counts);
 
-  document.querySelectorAll('[data-workspace-tab]').forEach(button => {
-    const selected = button.dataset.workspaceTab === state.workspaceTab;
-    button.classList.toggle('active', selected);
-    button.setAttribute('aria-current', selected ? 'page' : 'false');
-  });
-  const workspace = document.querySelector('.workspace');
-  workspace?.classList.toggle('activity-mode', state.workspaceTab === 'activity');
-  workspace?.classList.toggle('approved-mode', state.workspaceTab === 'approved');
-
-  const approved = state.images.filter(asset => asset.status === 'approved');
-  const approvedMode = state.workspaceTab === 'approved' && state.view === 'gallery';
-  const singleCollection = isSingleCollectionScope();
-  document.querySelector('.content-frame')?.classList.toggle('approved-mode', approvedMode);
-  $('#approvedPanel').classList.toggle('hidden', !approvedMode);
-  $('#approvedCount').textContent = `${approved.length} 项通过`;
-  $('#approvedSummaryText').textContent = approved.length ? (singleCollection ? '' : '进入单个集合后导出') : '通过后可导出';
-  $('#approvedHandoff').disabled = approved.length === 0 || !singleCollection;
-  $('#approvedReport').disabled = state.images.length === 0 || !singleCollection;
-  const totalBytes = approved.reduce((total, asset) => total + Number(asset.size || 0), 0);
-  $('#approvedMeta').innerHTML = `<div><span>范围</span><strong>${esc(title)}</strong></div>${totalBytes ? `<div><span>大小</span><strong>${esc(formatBytes(totalBytes))}</strong></div>` : ''}`;
-
-  if (state.workspaceTab === 'activity') $('#workspaceCount').textContent = singleCollection ? `${state.activityEvents.length} 条` : '按集合查看';
-  else if (approvedMode) $('#workspaceCount').textContent = '';
-  else $('#workspaceCount').textContent = state.filtered.length === state.images.length ? '' : `${state.filtered.length} / ${state.images.length}`;
+  $('#workspaceCount').textContent = state.filtered.length === state.images.length ? '' : `${state.filtered.length} / ${state.images.length}`;
 }
 
 function scopedCollections(project = '', scene = '', topic = '') {
@@ -617,11 +592,12 @@ function renderRail() {
   const nav = $('#collectionNav');
   if (!nav) return;
   const project = currentProject();
-  $('#switcherName').textContent = project || '所有项目';
-  $('#switcherMeta').textContent = project ? projectMeta(project) : `${projectNames().length} 个项目`;
   nav.innerHTML = project
     ? renderProjectBody(project)
     : projectNames().map(name => `<button type="button" class="nav-item" data-project="${esc(name)}"><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">${esc(name)}</span>${countBadge(pendingCount(scopedCollections(name)))}</button>`).join('') || '<div class="nav-empty">还没有登记素材目录</div>';
+  nav.querySelectorAll('[data-collection],[data-project],[data-scene],[data-topic]').forEach(button => {
+    button.addEventListener('click', () => window.AR?.showLibrary?.(), {capture: true});
+  });
   nav.querySelectorAll('[data-collection]').forEach(button => {
     button.onclick = () => switchCollection(button.dataset.collection).catch(showError);
   });
@@ -671,35 +647,7 @@ function renderCollections(active) {
   renderRail();
 }
 
-function renderProjectMenu() {
-  const query = $('#projectMenuSearch').value.trim().toLowerCase();
-  const current = currentProject();
-  const projects = projectNames();
-  $('#projectMenuSearch').classList.toggle('hidden', projects.length <= 6);
-  const rows = projects.filter(name => !query || name.toLowerCase().includes(query)).map(name =>
-    `<button type="button" class="menu-item" role="menuitem" data-switch-project="${esc(name)}"><strong>${esc(name)}</strong><small>${esc(projectMeta(name))}</small>${name === current ? '<span class="check" aria-label="当前">✓</span>' : ''}</button>`
-  );
-  $('#projectMenuList').innerHTML = `<div class="menu-label">项目</div>${rows.join('') || '<div class="nav-empty">没有匹配的项目</div>'}<div class="menu-sep"></div><button type="button" class="menu-item" role="menuitem" data-switch-project="__all__"><strong>所有项目</strong><small>跨项目浏览</small>${current ? '' : '<span class="check" aria-label="当前">✓</span>'}</button>`;
-}
-
-function openProjectMenu() {
-  renderProjectMenu();
-  $('#projectMenu').classList.remove('hidden');
-  $('#projectSwitcher').setAttribute('aria-expanded', 'true');
-  const search = $('#projectMenuSearch');
-  (search.classList.contains('hidden') ? $('#projectMenuList .menu-item') : search)?.focus();
-}
-
-function closeProjectMenu({focus = false} = {}) {
-  if ($('#projectMenu').classList.contains('hidden')) return;
-  $('#projectMenu').classList.add('hidden');
-  $('#projectSwitcher').setAttribute('aria-expanded', 'false');
-  $('#projectMenuSearch').value = '';
-  if (focus) $('#projectSwitcher').focus();
-}
-
 function switchProject(value) {
-  closeProjectMenu();
   return value === '__all__' ? setAllProjectsScope() : setProjectScope(value);
 }
 
@@ -772,7 +720,7 @@ function updateReviewLaunch() {
   if (!button) return;
   const candidates = reviewCandidates();
   const pending = candidates.filter(asset => !asset.status).length;
-  button.disabled = state.workspaceTab === 'activity' || candidates.length === 0;
+  button.disabled = candidates.length === 0;
   button.title = pending ? `从 ${pending} 项待审开始${candidates.some(asset => assetTaxonomy(asset).use === 'design') ? '，设计优先' : ''}` : '当前范围已审完';
 }
 
@@ -1190,7 +1138,8 @@ function openAt(index, updateUrl = true) {
   syncFilmstrip();
   cancelAnnotationMode();
   loadAnnotations(asset).catch(showError);
-  if (updateUrl && asset.asset_id) history.replaceState(null, '', assetUrl(asset));
+  if (updateUrl && asset.asset_id) libraryUrl(assetUrl(asset));
+  window.dispatchEvent(new CustomEvent('ar:file', {detail: asset}));
   if (asset.is_new) {
     asset.is_new = false;
     apiPost('/api/seen', {collection: asset.collection, rel: asset.rel}).then(refreshReviewState).catch(console.error);
@@ -1209,7 +1158,7 @@ function close() {
   state.annotations = [];
   cancelAnnotationMode();
   renderAnnotations();
-  if (state.active) history.replaceState(null, '', collectionUrl(state.active));
+  if (state.active) libraryUrl(collectionUrl(state.active));
   if (compareModal.classList.contains('hidden')) document.body.style.overflow = '';
 }
 
@@ -1841,156 +1790,18 @@ function formatEventTime(value) {
   return date.toLocaleString('zh-CN', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false});
 }
 
-function formatEventDay(value) {
-  const date = new Date(value);
-  if (!value || Number.isNaN(date.getTime())) return '更早';
-  const today = new Date();
-  const days = Math.round((new Date(today.toDateString()) - new Date(date.toDateString())) / 86400000);
-  if (days === 0) return '今天';
-  if (days === 1) return '昨天';
-  return date.toLocaleDateString('zh-CN', {year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric', month: 'long', day: 'numeric', weekday: 'short'});
-}
-
-function formatEventClock(value) {
-  const date = new Date(value);
-  if (!value || Number.isNaN(date.getTime())) return value || '';
-  return date.toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit', hour12: false});
-}
-
-function activityAsset(event) {
-  const rel = String(event?.rel || '').trim();
-  const assetId = String(event?.asset_id || '').trim();
-  return state.images.find(asset => (rel && asset.rel === rel) || (assetId && asset.asset_id === assetId)) || null;
-}
-
-// Mirrors activity.event_summary in Chinese. The server summary stays English
-// because agents and the CLI read it as a stable contract.
-function activitySummaryText(event) {
-  const action = String(event.action || '');
-  const details = event.details && typeof event.details === 'object' ? event.details : {};
-  const subject = String(event.rel || '').trim() || String(details.name || details.family_id || '集合');
-  if (action === 'review' || action === 'batch') return `${subject}：${statusDisplay(event.old_status)} → ${statusDisplay(event.new_status)}`;
-  if (action === 'comment') return `更新审核意见：${subject}`;
-  if (action === 'asset_added') return `新素材：${subject}`;
-  if (action === 'asset_renamed') return `重命名：${details.old_rel || subject} → ${details.new_rel || subject}`;
-  if (action === 'asset_changed') return `素材内容已变更，需重新审核：${subject}`;
-  if (action === 'asset_missing') return `素材缺失：${subject}`;
-  if (action === 'asset_restored') return `素材已恢复：${subject}`;
-  if (action === 'collection_complete') return '集合审核已完成';
-  if (action === 'collection_reopen') return '集合审核已重新打开';
-  if (action === 'metadata_updated') return `更新来源信息：${subject}`;
-  const verbs = {
-    family_created: '建立版本组', family_deleted: '删除版本组', family_renamed: '重命名版本组',
-    family_members_added: '加入版本组', family_members_removed: '移出版本组', family_preferred_changed: '更换偏好方案',
-    annotation_created: '新增标注', annotation_updated: '更新标注', annotation_deleted: '删除标注', annotation_hash_mismatch: '标注位置可能失效',
-  };
-  if (verbs[action]) return `${verbs[action]}：${subject}`;
-  return event.summary || action;
-}
-
-function activityPresentation(event) {
-  const action = String(event.action || '').toLowerCase();
-  const status = String(event.new_status || '').toLowerCase();
-  if ((action === 'review' || action === 'batch') && status === 'approved') return {tone: 'approved', mark: '✓', label: '审核'};
-  if ((action === 'review' || action === 'batch') && status === 'rejected') return {tone: 'rejected', mark: '×', label: '审核'};
-  if ((action === 'review' || action === 'batch') && status === 'maybe') return {tone: 'maybe', mark: '✎', label: '审核'};
-  if (action === 'asset_added' || action === 'asset_restored') return {tone: 'added', mark: '+', label: '入库'};
-  if (action === 'comment' || action.startsWith('annotation_')) return {tone: 'note', mark: '•', label: '意见'};
-  if (action.startsWith('family_')) return {tone: 'family', mark: '◇', label: '版本组'};
-  if (action === 'metadata_updated' || action.startsWith('metadata')) return {tone: 'neutral', mark: 'i', label: '来源'};
-  if (action === 'collection_complete') return {tone: 'approved', mark: '✓', label: '完成'};
-  return {tone: 'neutral', mark: '•', label: action.replaceAll('_', ' ') || '活动'};
-}
-
-async function loadActivity() {
-  if (!state.active) return;
-  if (!isSingleCollectionScope()) {
-    state.activityEvents = [];
-    $('#activitySummary').textContent = '活动记录按集合保存';
-    $('#activityList').innerHTML = '<div class="activity-empty">请选择一个具体集合查看审核历史与批注记录。</div>';
-    renderWorkspaceState();
-    return;
-  }
-  const response = await fetch(`/api/activity?collection=${encodeURIComponent(state.active)}&limit=200`, {cache: 'no-store'});
-  if (!response.ok) throw new Error('无法读取审核记录');
-  const data = await response.json();
-  state.activityEvents = data.events || [];
-  $('#activitySummary').textContent = `${state.activityEvents.length} 条`;
-  let lastDay = '';
-  $('#activityList').innerHTML = state.activityEvents.length
-    ? [...state.activityEvents].reverse().map(event => {
-        const presentation = activityPresentation(event);
-        const asset = activityAsset(event);
-        const thumbnail = asset ? `<img class="activity-thumb" loading="lazy" src="${esc(asset.thumb)}" alt="">` : '';
-        const day = formatEventDay(event.created_at);
-        const heading = day !== lastDay ? `<div class="activity-day">${esc(day)}</div>` : '';
-        lastDay = day;
-        return `${heading}<article class="activity-event ${presentation.tone}"><span class="activity-marker" aria-hidden="true">${presentation.mark}</span><div class="activity-body">${thumbnail}<div class="activity-copy"><strong title="${esc(event.summary || '')}">${esc(activitySummaryText(event))}</strong><span>${esc(presentation.label)}</span></div></div><time datetime="${esc(event.created_at || '')}" title="${esc(formatEventTime(event.created_at))}">${esc(formatEventClock(event.created_at))}</time></article>`;
-      }).join('')
-    : '<div class="activity-empty">还没有审核记录。</div>';
-  renderWorkspaceState();
-}
-
-async function setWorkspaceTab(tab) {
-  const next = ['gallery', 'activity', 'approved'].includes(tab) ? tab : 'gallery';
-  const previous = state.workspaceTab;
-  state.activeSavedView = '';
-
-  if (next === 'activity') {
-    if (previous === 'approved' && $('#filter').value === 'approved') {
-      $('#filter').value = state.galleryFilterBeforeApproved || 'all';
-    }
-    state.workspaceTab = 'activity';
-    state.view = 'activity';
+function setView(view) {
+  if (view.startsWith('saved:')) applySavedView(view.slice(6));
+  else {
+    state.activeSavedView = '';
     renderViewMenu();
-    $('#galleryView').classList.add('hidden');
-    $('#activityView').classList.remove('hidden');
-    $('#approvedPanel').classList.add('hidden');
-    await loadActivity();
-    renderWorkspaceState();
-    return;
   }
-
-  state.view = 'gallery';
-  state.workspaceTab = next;
-  $('#galleryView').classList.remove('hidden');
-  $('#activityView').classList.add('hidden');
-  if (next === 'approved') {
-    if (previous !== 'approved' && $('#filter').value !== 'approved') state.galleryFilterBeforeApproved = $('#filter').value || 'all';
-    $('#filter').value = 'approved';
-  } else if (previous === 'approved' && $('#filter').value === 'approved') {
-    $('#filter').value = state.galleryFilterBeforeApproved || 'all';
-  }
-  renderViewMenu();
-  applyFilter();
-  updateCollectionActions();
-  renderWorkspaceState();
-}
-
-function syncWorkspaceFromAssetControls() {
-  state.view = 'gallery';
-  state.activeSavedView = '';
-  state.workspaceTab = $('#filter').value === 'approved' ? 'approved' : 'gallery';
-  if (state.workspaceTab === 'gallery') state.galleryFilterBeforeApproved = $('#filter').value || 'all';
-  $('#galleryView').classList.remove('hidden');
-  $('#activityView').classList.add('hidden');
-  renderViewMenu();
-}
-
-async function setView(view) {
-  if (view.startsWith('saved:')) {
-    applySavedView(view.slice(6));
-    return;
-  }
-  await setWorkspaceTab(view === 'activity' ? 'activity' : 'gallery');
 }
 
 async function switchCollection(slug) {
   if (!slug || (slug === state.active && state.scope.kind === 'collection')) return;
-  const tab = state.workspaceTab;
-  history.pushState(null, '', collectionUrl(slug));
+  if (libraryShown()) history.pushState(null, '', collectionUrl(slug));
   await load(slug);
-  await setWorkspaceTab(tab);
 }
 
 function downloadJson(filename, payload) {
@@ -2061,10 +1872,8 @@ async function handleFamilyAction(value) {
 function paletteCommands() {
   // `alias` keeps English keywords searchable alongside the Chinese labels.
   const commands = [
-    {label: '素材', alias: 'gallery', run: () => setWorkspaceTab('gallery')},
-    {label: '记录', alias: 'activity history', run: () => setWorkspaceTab('activity')},
-    {label: '交付', alias: 'approved handoff', run: () => setWorkspaceTab('approved')},
-    {label: '审核', alias: 'review start quick cull', run: () => startReview()},
+    ...(window.AR?.paletteCommands?.() || []),
+    {label: '审核', alias: 'review start quick cull', run: () => { window.AR?.showLibrary?.(); startReview(); }},
     {label: '搜索', alias: 'search find', keys: '/', run: () => $('#search').focus()},
     {label: '只看待审', alias: 'unreviewed filter', run: () => setStatusFilter('unreviewed')},
     {label: '保存视图…', alias: 'save view', run: () => saveCurrentView()},
@@ -2078,8 +1887,6 @@ function paletteCommands() {
       {label: '导出交付清单', alias: 'export handoff', run: () => exportHandoff()},
     );
   }
-  for (const project of projectNames()) commands.push({label: `项目：${project}`, alias: 'project switch', run: () => setProjectScope(project)});
-  commands.push({label: '项目：所有项目', alias: 'project all', run: () => setAllProjectsScope()});
   for (const saved of state.savedViews) commands.push({label: `已保存视图：${saved.name}`, alias: 'saved view', run: () => applySavedView(saved.id)});
   if (state.filtered.length) commands.push({label: `全选（${state.filtered.length}）`, alias: 'select all', run: () => selectAllVisible()});
   if (state.selected.size >= 2) commands.push({label: '对比选中', alias: 'compare', run: () => openCompare()});
@@ -2151,13 +1958,13 @@ $('#sceneFilter').onchange = () => {
   else if ($('#projectFilter').value) setProjectScope(project).catch(showError);
   else load(state.active).catch(showError);
 };
-$('#useFilter').onchange = () => { syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); };
-$('#filter').onchange = () => { syncWorkspaceFromAssetControls(); applyFilter(); updateCollectionActions(); };
-$('#sort').onchange = () => { if (state.workspaceTab === 'activity') syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); };
+$('#useFilter').onchange = () => { clearActiveSavedView(); applyFilter(); };
+$('#filter').onchange = () => { clearActiveSavedView(); applyFilter(); updateCollectionActions(); };
+$('#sort').onchange = () => { clearActiveSavedView(); applyFilter(); };
 let searchTimer = null;
 $('#search').oninput = () => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { if (state.workspaceTab === 'activity') syncWorkspaceFromAssetControls(); clearActiveSavedView(); applyFilter(); updateCollectionActions(); }, 120);
+  searchTimer = setTimeout(() => { clearActiveSavedView(); applyFilter(); updateCollectionActions(); }, 120);
 };
 $('#statusChips').onclick = event => {
   const chip = event.target.closest('[data-status]');
@@ -2170,29 +1977,7 @@ $('#filtersToggle').onclick = () => {
 $('#density').oninput = () => setDensity($('#density').value);
 $('#themeToggle').onclick = () => cycleTheme();
 $('#paletteHint').onclick = () => openCommandPalette();
-$('#projectSwitcher').onclick = () => ($('#projectMenu').classList.contains('hidden') ? openProjectMenu() : closeProjectMenu());
-$('#projectMenuSearch').oninput = () => renderProjectMenu();
-$('#projectMenu').onclick = event => {
-  const item = event.target.closest('[data-switch-project]');
-  if (item) switchProject(item.dataset.switchProject).catch(showError);
-};
-$('#projectMenu').onkeydown = event => {
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    event.stopPropagation();
-    closeProjectMenu({focus: true});
-    return;
-  }
-  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-  event.preventDefault();
-  const items = [...$('#projectMenu').querySelectorAll('.menu-item')];
-  const index = items.indexOf(document.activeElement);
-  items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
-};
-document.addEventListener('pointerdown', event => {
-  if (!event.target.closest('.rail-head')) closeProjectMenu();
-});
-$('#view').onchange = () => setView($('#view').value).catch(showError);
+$('#view').onchange = () => setView($('#view').value);
 $('#startReview').onclick = () => startReview();
 $('#filmstrip').onclick = event => {
   const frame = event.target.closest('[data-film]');
@@ -2201,11 +1986,6 @@ $('#filmstrip').onclick = event => {
 $('#selectionMode').onclick = () => setSelectionMode(!state.selectionMode);
 $('#selectAllVisible').onclick = () => selectAllVisible();
 $('#clearSelection').onclick = () => clearSelection();
-document.querySelectorAll('[data-workspace-tab]').forEach(button => {
-  button.onclick = () => setWorkspaceTab(button.dataset.workspaceTab).catch(showError);
-});
-$('#approvedHandoff').onclick = () => exportHandoff().catch(showError);
-$('#approvedReport').onclick = () => window.open(`/report?collection=${encodeURIComponent(state.active)}&present=1&refresh=1`, '_blank', 'noopener');
 $('#actions').onchange = () => handleCollectionAction($('#actions').value).catch(showError);
 $('#selectionAction').onchange = () => handleSelectionAction($('#selectionAction').value).catch(showError);
 $('#reviewStatus').onclick = event => {
@@ -2311,7 +2091,9 @@ $('#overlayRange').oninput = () => {
   if (top && state.compareMode === 'overlay') top.style.opacity = Number($('#overlayRange').value) / 100;
 };
 
-window.onpopstate = () => load(collectionFromLocation()).catch(showError);
+window.addEventListener('popstate', () => {
+  if (libraryShown()) load(collectionFromLocation()).catch(showError);
+});
 document.onkeydown = event => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     event.preventDefault();
@@ -2322,6 +2104,7 @@ document.onkeydown = event => {
     if (event.key === 'Escape') closeCommandPalette();
     return;
   }
+  if (!libraryShown()) return;
   if (!compareModal.classList.contains('hidden')) {
     if (event.key === 'Escape') closeCompare();
     return;
@@ -2351,7 +2134,7 @@ document.onkeydown = event => {
   }
   // Hover-to-decide: 1/2/3 on the card under the pointer, 0 clears it.
   const hoverKey = {1: 'approved', 2: 'rejected', 3: 'maybe', 0: ''}[event.key];
-  if (hoverKey !== undefined && !editing && !event.defaultPrevented && !event.ctrlKey && !event.metaKey && !event.altKey && !state.selectionMode && state.workspaceTab !== 'activity') {
+  if (hoverKey !== undefined && !editing && !event.defaultPrevented && !event.ctrlKey && !event.metaKey && !event.altKey && !state.selectionMode) {
     const hovered = grid.querySelector('.card:hover');
     const asset = hovered ? state.filtered[Number(hovered.dataset.i)] : null;
     if (asset && (hoverKey || asset.status)) {
@@ -2387,6 +2170,7 @@ document.onkeydown = event => {
 async function pollCatalog() {
   if (document.hidden || !state.active || !isSingleCollectionScope() || state.selected.size) return;
   if (!modal.classList.contains('hidden') || !compareModal.classList.contains('hidden')) return;
+  if (!libraryShown()) return;
   const scopeRequest = state.scopeRequest;
   const active = state.active;
   const params = new URLSearchParams({collection: active});
@@ -2397,6 +2181,20 @@ async function pollCatalog() {
   const generation = Number((data.scan || {}).generation || 0);
   if (generation !== state.catalogGeneration) await load(active);
 }
+
+// The studio shell drives the library through this small surface.
+window.AR = Object.assign(window.AR || {}, {
+  library: {
+    projectNames: () => projectNames(),
+    currentProject: () => currentProject(),
+    collectionsFor: project => scopedCollections(project),
+    pendingFor: project => pendingCount(scopedCollections(project)),
+    setProject: project => (projectNames().includes(project) ? setProjectScope(project) : Promise.resolve()),
+    openCollection: slug => switchCollection(slug),
+    syncUrl: () => libraryUrl(isSingleCollectionScope() && state.active ? collectionUrl(state.active) : '/'),
+    toast,
+  },
+});
 
 function showError(error) {
   console.error(error);
@@ -2412,6 +2210,7 @@ function showError(error) {
     await session();
     await load(collectionFromLocation());
     refreshReviewState().catch(console.error);
+    window.dispatchEvent(new CustomEvent('ar:library-ready'));
     setInterval(() => pollCatalog().catch(error => console.error(error)), 2000);
   } catch (error) {
     showError(error);
