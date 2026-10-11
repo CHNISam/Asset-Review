@@ -358,6 +358,7 @@ function viewCard(view, detail) {
     selected: `已选 ${current?.label || ''} · 待定稿`,
     updated: `有新版本`,
     choose: `${view.revisions.filter(r => r.state === 'candidate').length} 个候选待选`,
+    single: `${current?.label || ''} · 随定稿确认`,
     missing: '缺少设计稿',
   }[view.status];
   return `<article class="view-card ${esc(view.status)}" data-view-card="${esc(view.view)}" tabindex="0" aria-label="${esc(view.label)}">
@@ -748,8 +749,8 @@ function closeDialog() {
 
 function lockDialog() {
   const detail = S.asset;
-  const chosen = detail.views.filter(view => view.selected_revision_id);
-  const missing = detail.views.filter(view => view.required && !view.selected_revision_id);
+  const chosen = detail.views.filter(view => view.selected_revision_id || (view.required && view.status === 'single'));
+  const missing = detail.views.filter(view => view.required && !view.selected_revision_id && view.status !== 'single');
   const number = detail.locks.length + 1;
   openDialog(`
     <h2>确认整套设计 · D${number}</h2>
